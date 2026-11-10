@@ -18,6 +18,7 @@ pub const TURN_TOLERANCE: f32 = 0.15;
 pub const PELLET_SCORE: u32 = 10;
 pub const COLOR_SCORE: Color = WHITE;
 pub const COLOR_HUD_BG : Color = Color::new(0.0, 0.0, 1.0, 0.85);
+pub const COLOR_WIN: Color = Color::new(0.20, 1.00, 0.20, 1.0);
 
 // Cores
 pub const COLOR_BG: Color = BLACK;

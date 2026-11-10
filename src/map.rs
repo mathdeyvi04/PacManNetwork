@@ -16,6 +16,8 @@ pub enum Tile {
 pub struct Map {
     /// Grid achatado: `tiles[y * GRID_WIDTH + x]`.
     tiles: Vec<Tile>,
+    /// Pontos Restando
+    pellets_remaining: usize,
 }
 
 impl Map {
@@ -101,13 +103,15 @@ impl Map {
             }
         }
 
+        let mut pellets_remaining = 0usize;
         for t in tiles.iter_mut() {
             if *t == Tile::Empty {
                 *t = Tile::Pellet;
+                pellets_remaining += 1;
             }
         }
 
-        Map { tiles }
+        Map { tiles, pellets_remaining }
     }
 
     #[inline(always)]
@@ -125,10 +129,17 @@ impl Map {
         let i = Self::idx(x, y);
         if self.tiles[i] == Tile::Pellet {
             self.tiles[i] = Tile::Empty;
+            self.pellets_remaining = self.pellets_remaining.saturating_sub(1);
             true
         } else {
             false
         }
+    }
+
+    /// Getter para obtermos o total de pontos restando
+    #[inline(always)]
+    pub fn pellets_remaining(&self) -> usize {
+        self.pellets_remaining
     }
 
     /// Desenhará o labirinto

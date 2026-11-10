@@ -29,7 +29,7 @@ async fn main() {
         game.update(dt);
 
         // Restart: SPACE após Game Over gera novo mapa e zera score.
-        if game.is_game_over() && is_key_pressed(KeyCode::Space) {
+        if game.is_finished() && is_key_pressed(KeyCode::Space) {
             game = Game::new();
         }
 

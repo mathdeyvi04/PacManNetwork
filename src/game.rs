@@ -5,7 +5,7 @@ use crate::map::Map;
 use crate::player::{Direction, Player};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum GameState { Playing, GameOver }
+pub enum GameState { Playing, GameOver, Win }
 
 pub struct Game {
     pub map: Map,
@@ -73,7 +73,16 @@ impl Game {
         // --- Player ---
         self.player.update(&self.map, dt);
         let (tx, ty) = self.player.tile();
-        if self.map.eat_pellet(tx, ty) { self.add_score(PELLET_SCORE); }
+        if self.map.eat_pellet(tx, ty) { 
+            self.add_score(PELLET_SCORE); 
+            if self.map.eat_pellet(tx, ty) {
+                self.add_score(PELLET_SCORE);
+                if self.map.pellets_remaining() == 0 {
+                    self.state = GameState::Win;
+                    return;                     // não deixa fantasma matar no mesmo frame
+                }
+            }
+        }
 
         // --- Timer scatter/chase ---
         self.mode_timer -= dt;
@@ -126,6 +135,19 @@ impl Game {
             draw_text("GAME OVER", w * 0.5 - 110.0, h * 0.5 - 10.0, 44.0, COLOR_GAME_OVER);
             draw_text("Press SPACE", w * 0.5 - 78.0, h * 0.5 + 40.0, 24.0, WHITE);
         }
+        
+        if self.state == GameState::Win {
+            let (w, h) = (screen_width(), screen_height());
+            draw_rectangle(0.0, 0.0, w, h, COLOR_OVERLAY);
+            draw_text("YOU WIN!", w * 0.5 - 100.0, h * 0.5 - 10.0, 44.0, COLOR_WIN);
+            draw_text(&self.score_text, w * 0.5 - 70.0, h * 0.5 + 30.0, 24.0, WHITE);
+            draw_text("Press SPACE", w * 0.5 - 78.0, h * 0.5 + 70.0, 24.0, WHITE);
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_finished(&self) -> bool {
+        self.state != GameState::Playing
     }
 }
 
