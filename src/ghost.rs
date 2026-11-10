@@ -33,12 +33,17 @@ impl Ghost {
     }
 
     #[inline(always)]
-    fn color(&self) -> Color {
-        match self.kind {
-            GhostKind::Blinky => COLOR_GHOST_BLINKY,
-            GhostKind::Pinky  => COLOR_GHOST_PINKY,
-            GhostKind::Inky   => COLOR_GHOST_INKY,
-            GhostKind::Clyde  => COLOR_GHOST_CLYDE,
+    fn color(&self, mode: GhostMode) -> Color {
+        match (self.kind, mode) {
+            (GhostKind::Blinky, GhostMode::Chase)   => COLOR_CHASE_BLINKY,
+            (GhostKind::Pinky,  GhostMode::Chase)   => COLOR_CHASE_PINKY,
+            (GhostKind::Inky,   GhostMode::Chase)   => COLOR_CHASE_INKY,
+            (GhostKind::Clyde,  GhostMode::Chase)   => COLOR_CHASE_CLYDE,
+    
+            (GhostKind::Blinky, GhostMode::Scatter) => COLOR_SCATTER_BLINKY,
+            (GhostKind::Pinky,  GhostMode::Scatter) => COLOR_SCATTER_PINKY,
+            (GhostKind::Inky,   GhostMode::Scatter) => COLOR_SCATTER_INKY,
+            (GhostKind::Clyde,  GhostMode::Scatter) => COLOR_SCATTER_CLYDE,
         }
     }
 
@@ -85,7 +90,7 @@ impl Ghost {
                 || ny < 0
                 || nx >= GRID_WIDTH as i32
                 || ny >= GRID_HEIGHT as i32
-                || map.is_wall(nx as usize, ny as usize);
+                || map.is_wall_or_tunnel(nx as usize, ny as usize);
     
             if blocked {
                 let target = self.compute_target(
@@ -110,7 +115,7 @@ impl Ghost {
         // Movimento normal.
         let new_pos = self.pos + self.dir.vec() * GHOST_SPEED * dt;
     
-        self.pos = clamp_against_wall(new_pos, self.dir, map);
+        self.pos = clamp_against_wall::<true>(new_pos, self.dir, map);
     
         // Detecta o PRÓXIMO centro na direção do movimento.
         // Importante: o centro atual nunca é considerado
@@ -247,12 +252,13 @@ impl Ghost {
     }
 
     /// Desenha como quadrado — coerente com o estilo do Pac-Man "sem sprites".
-    pub fn draw(&self) {
+    pub fn draw(&self, blink: bool, mode: GhostMode) {
         let s = GHOST_RADIUS * 2.0;
+        let color = if blink { COLOR_GHOST_BLINK } else { self.color(mode) };
         draw_rectangle(
             self.pos.x * TILE_SIZE - GHOST_RADIUS,
             self.pos.y * TILE_SIZE - GHOST_RADIUS,
-            s, s, self.color(),
+            s, s, color,
         );
     }
 }
@@ -289,7 +295,7 @@ fn choose_direction(
         let nx = tile.0 + dx;
         let ny = tile.1 + dy;
         // Bordas já são paredes; nx, ny sempre em [0, W-1] / [0, H-1].
-        if map.is_wall(nx as usize, ny as usize) {
+        if map.is_wall_or_tunnel(nx as usize, ny as usize) {
             continue;
         }
         let ddx = target.0 - nx;

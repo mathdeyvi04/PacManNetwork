@@ -124,7 +124,13 @@ impl Game {
 
     pub fn draw(&self) {
         self.map.draw();
-        for g in &self.ghosts { g.draw(); }
+        
+        // Aviso de troca de modo: últimos 2 s do timer, fantasmas piscam a 4 Hz.
+        let warning = self.state == GameState::Playing
+            && self.mode_timer < MODE_WARNING_DURATION;
+        let blink_on = warning && (((get_time() * 4.0) as i32) & 1) == 0;
+    
+        for g in &self.ghosts { g.draw(blink_on, self.mode); }
         self.player.draw();
 
         draw_text(&self.score_text, 8.0, 16.0, 22.0, COLOR_SCORE);

@@ -35,10 +35,26 @@ pub const SCATTER_DURATION: f32 = 7.0;
 pub const CHASE_DURATION: f32 = 20.0;
 pub const CATCH_DISTANCE_SQ: f32 = 0.25; // 0.5 tiles ao quadrado
 
-// Cores dos fantasmas
-pub const COLOR_GHOST_BLINKY: Color = RED;
-pub const COLOR_GHOST_PINKY:  Color = Color::new(1.00, 0.72, 0.85, 1.0);
-pub const COLOR_GHOST_INKY:   Color = Color::new(0.00, 1.00, 1.00, 1.0);
-pub const COLOR_GHOST_CLYDE:  Color = Color::new(1.00, 0.60, 0.00, 1.0);
 pub const COLOR_GAME_OVER:    Color = Color::new(1.0, 0.2, 0.2, 1.0);
 pub const COLOR_OVERLAY:      Color = Color::new(0.0, 0.0, 0.0, 0.75);
+
+// Cores base (usadas como fallback / identidade)
+// --- CHASE: cores agressivas (alta saturação / brilho) ---
+pub const COLOR_CHASE_BLINKY: Color = Color::new(1.00, 0.00, 0.00, 1.0); // vermelho puro
+pub const COLOR_CHASE_PINKY:  Color = Color::new(1.00, 0.30, 0.65, 1.0); // rosa quente
+pub const COLOR_CHASE_INKY:   Color = Color::new(0.00, 0.90, 1.00, 1.0); // ciano elétrico
+pub const COLOR_CHASE_CLYDE:  Color = Color::new(1.00, 0.45, 0.00, 1.0); // laranja intenso
+
+// --- SCATTER: cores tranquilas (dessaturadas / claras) ---
+pub const COLOR_SCATTER_BLINKY: Color = Color::new(1.00, 0.55, 0.55, 1.0); // vermelho suave
+pub const COLOR_SCATTER_PINKY:  Color = Color::new(1.00, 0.80, 0.90, 1.0); // rosa pastel
+pub const COLOR_SCATTER_INKY:   Color = Color::new(0.60, 1.00, 1.00, 1.0); // ciano claro
+pub const COLOR_SCATTER_CLYDE:  Color = Color::new(1.00, 0.80, 0.55, 1.0); // laranja claro
+
+// Blinking dos fantasmas antes da troca Scatter ↔ Chase
+pub const MODE_WARNING_DURATION: f32 = 5.0;
+pub const COLOR_GHOST_BLINK: Color = WHITE;
+
+// Túnel: linha central do grid
+pub const TUNNEL_ROW: usize = GRID_HEIGHT / 2;    
+pub const COLOR_TUNNEL: Color = Color::new(0.15, 0.15, 0.30, 1.0);

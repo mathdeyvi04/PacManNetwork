@@ -10,6 +10,7 @@ pub enum Tile {
     Wall,
     Pellet,
     Empty,
+    Tunnel,
 }
 
 /// Labirinto em grid de tiles.
@@ -103,6 +104,12 @@ impl Map {
             }
         }
 
+        tiles[Self::idx(0, TUNNEL_ROW)] = Tile::Tunnel;
+        tiles[Self::idx(GRID_WIDTH - 1, TUNNEL_ROW)] = Tile::Tunnel;
+        tiles[Self::idx(1, TUNNEL_ROW)] = Tile::Empty;
+        tiles[Self::idx(GRID_WIDTH - 2, TUNNEL_ROW)] = Tile::Empty;
+        
+        // (fill de pellets já existente abaixo — converte Empty→Pellet)
         let mut pellets_remaining = 0usize;
         for t in tiles.iter_mut() {
             if *t == Tile::Empty {
@@ -117,6 +124,11 @@ impl Map {
     #[inline(always)]
     pub fn is_wall(&self, x: usize, y: usize) -> bool {
         self.tiles[Self::idx(x, y)] == Tile::Wall
+    }
+
+    #[inline(always)]
+    pub fn is_wall_or_tunnel(&self, x: usize, y: usize) -> bool {
+        matches!(self.tiles[Self::idx(x, y)], Tile::Wall | Tile::Tunnel)
     }
 
     #[inline(always)]
@@ -159,6 +171,9 @@ impl Map {
                         let s = TILE_SIZE * 0.28;
                         let o = (TILE_SIZE - s) * 0.5;
                         draw_rectangle(px + o, py + o, s, s, COLOR_PELLET);
+                    }
+                    Tile::Tunnel => {
+                        draw_rectangle(px, py, TILE_SIZE, TILE_SIZE, COLOR_TUNNEL);
                     }
                     Tile::Empty => {}
                 }

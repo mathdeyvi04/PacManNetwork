@@ -126,7 +126,24 @@ impl Player {
 
         let delta = self.dir.vec() * self.speed * dt;
         let new_pos = self.pos + delta;
-        self.pos = clamp_against_wall(new_pos, self.dir, map);
+        self.pos = clamp_against_wall::<false>(new_pos, self.dir, map);
+
+        self.wrap_tunnel();
+    }
+
+    /// Teletransporta o jogador para o outro lado quando ele cruza
+    /// a borda do mapa estando na linha do túnel.
+    #[inline]
+    fn wrap_tunnel(&mut self) {
+        let ty = self.pos.y.floor() as i32;
+        if ty != TUNNEL_ROW as i32 {
+            return;
+        }
+        if self.pos.x < 0.0 {
+            self.pos.x += GRID_WIDTH as f32;
+        } else if self.pos.x >= GRID_WIDTH as f32 {
+            self.pos.x -= GRID_WIDTH as f32;
+        }
     }
 
     /// Desenha o Pac-Man com a boca oscilando na direção atual.
@@ -186,31 +203,37 @@ fn near_center(v: f32) -> Option<f32> {
 /// Impede atravessar paredes: se o tile à frente na direção `dir` for
 /// parede, trava o eixo de movimento no centro do tile atual.
 #[inline]
-pub fn clamp_against_wall(pos: Vec2, dir: Direction, map: &Map) -> Vec2 {
+pub fn clamp_against_wall<const FOR_GHOST: bool>(pos: Vec2, dir: Direction, map: &Map) -> Vec2 {
     let mut p = pos;
     let tx = p.x.floor() as i32;
     let ty = p.y.floor() as i32;
     let w = GRID_WIDTH as i32;
     let h = GRID_HEIGHT as i32;
 
+    // `FOR_GHOST` é constante de compilação → uma única especialização por chamador.
+    #[inline(always)]
+    fn blocked(map: &Map, x: usize, y: usize, for_ghost: bool) -> bool {
+        if for_ghost { map.is_wall_or_tunnel(x, y) } else { map.is_wall(x, y) }
+    }
+
     match dir {
         Direction::Right => {
-            if tx + 1 < w && map.is_wall((tx + 1) as usize, ty as usize) {
+            if tx + 1 < w && blocked(map, (tx + 1) as usize, ty as usize, FOR_GHOST) {
                 p.x = p.x.min(tx as f32 + 0.5);
             }
         }
         Direction::Left => {
-            if tx - 1 >= 0 && map.is_wall((tx - 1) as usize, ty as usize) {
+            if tx - 1 >= 0 && blocked(map, (tx - 1) as usize, ty as usize, FOR_GHOST) {
                 p.x = p.x.max(tx as f32 + 0.5);
             }
         }
         Direction::Down => {
-            if ty + 1 < h && map.is_wall(tx as usize, (ty + 1) as usize) {
+            if ty + 1 < h && blocked(map, tx as usize, (ty + 1) as usize, FOR_GHOST) {
                 p.y = p.y.min(ty as f32 + 0.5);
             }
         }
         Direction::Up => {
-            if ty - 1 >= 0 && map.is_wall(tx as usize, (ty - 1) as usize) {
+            if ty - 1 >= 0 && blocked(map, tx as usize, (ty - 1) as usize, FOR_GHOST) {
                 p.y = p.y.max(ty as f32 + 0.5);
             }
         }
