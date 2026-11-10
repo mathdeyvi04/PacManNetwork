@@ -33,7 +33,11 @@ pub const GHOST_SPEED: f32 = PLAYER_SPEED * 0.85;
 pub const GHOST_RADIUS: f32 = TILE_SIZE * 0.40;
 pub const SCATTER_DURATION: f32 = 7.0;
 pub const CHASE_DURATION: f32 = 20.0;
-pub const CATCH_DISTANCE_SQ: f32 = 0.25; // 0.5 tiles ao quadrado
+pub const CATCH_DISTANCE_SQ: f32 = 0.25;
+/// Quantos estados `(tile, dir)` memorizar por fantasma.
+pub const HIST_SIZE: usize = 8;
+/// Quantos tiles de "fuga aleatória" após detectar um loop.
+pub const DETOUR_LEN: u8 = 4;
 
 pub const COLOR_GAME_OVER:    Color = Color::new(1.0, 0.2, 0.2, 1.0);
 pub const COLOR_OVERLAY:      Color = Color::new(0.0, 0.0, 0.0, 0.75);

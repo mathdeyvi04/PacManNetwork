@@ -94,7 +94,7 @@ impl Game {
                 GhostMode::Chase   => CHASE_DURATION,
             };
             // Reverter todos ao trocar de modo (regra clássica).
-            for g in &mut self.ghosts { g.dir = g.dir.opposite(); }
+            for g in &mut self.ghosts { g.reverse(); }
         }
     
         // --- Fantasmas ---
