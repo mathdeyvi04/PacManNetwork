@@ -5,8 +5,8 @@ mod map;
 mod player;
 
 use constants::*;
+use game::Game;
 use macroquad::prelude::*;
-use map::Map;
 
 fn window_conf() -> Conf {
     Conf {
@@ -20,22 +20,20 @@ fn window_conf() -> Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
-    // Gerado UMA vez. O mapa é imutável por enquanto;
-    // quando o Pac-Man comer pastilhas, isso vira mutável.
-    let map = Map::generate();
+    let mut game = Game::new();
 
     loop {
+        let dt = get_frame_time().min(0.05);
         clear_background(COLOR_BG);
-        map.draw();
 
-        draw_text(
-            &format!("FPS: {}", get_fps()),
-            8.0,
-            14.0,
-            18.0,
-            WHITE,
-        );
+        game.update(dt);
 
+        // Restart: SPACE após Game Over gera novo mapa e zera score.
+        if game.is_game_over() && is_key_pressed(KeyCode::Space) {
+            game = Game::new();
+        }
+
+        game.draw();
         next_frame().await;
     }
 }

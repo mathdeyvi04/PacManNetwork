@@ -145,13 +145,9 @@ impl Map {
                         draw_rectangle(px, py, TILE_SIZE, TILE_SIZE, COLOR_WALL);
                     }
                     Tile::Pellet => {
-                        let r = TILE_SIZE * 0.15;
-                        draw_circle(
-                            px + TILE_SIZE * 0.5,
-                            py + TILE_SIZE * 0.5,
-                            r,
-                            COLOR_PELLET,
-                        );
+                        let s = TILE_SIZE * 0.28;
+                        let o = (TILE_SIZE - s) * 0.5;
+                        draw_rectangle(px + o, py + o, s, s, COLOR_PELLET);
                     }
                     Tile::Empty => {}
                 }
