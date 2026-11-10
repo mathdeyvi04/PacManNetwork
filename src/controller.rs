@@ -1,8 +1,7 @@
 use macroquad::prelude::*;
+use crate::game::Game;
 use crate::player::Direction;
 
-/// Comando atômico produzido por um Controller e consumido pela Engine.
-/// `Copy` + 2 bytes → passado por valor, sem alocação em nenhum caminho.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     None,
@@ -10,12 +9,10 @@ pub enum Action {
     Restart,
 }
 
-/// Contrato mínimo: 1 polling por frame. Sem alocação, sem `dyn` no hot loop.
 pub trait Controller {
-    fn poll(&mut self) -> Action;
+    fn poll(&mut self, game: &Game) -> Action;
 }
 
-/// Zero-sized: `new()` é `const`, o `&self` de `poll` não gera código.
 pub struct KeyboardController;
 
 impl KeyboardController {
@@ -25,7 +22,7 @@ impl KeyboardController {
 
 impl Controller for KeyboardController {
     #[inline]
-    fn poll(&mut self) -> Action {
+    fn poll(&mut self, _game: &Game) -> Action {
         if is_key_pressed(KeyCode::Right) || is_key_pressed(KeyCode::D) {
             return Action::Move(Direction::Right);
         }
