@@ -53,31 +53,149 @@ impl Ghost {
         mode: GhostMode,
         dt: f32,
     ) {
-        // 1) Move na direção atual (clamp contra parede).
+        // Centro do tile mais próximo.
+        let center_x = tile_center(self.pos.x);
+        let center_y = tile_center(self.pos.y);
+    
+        // Verifica se o fantasma está centralizado.
+        let at_center =
+            (self.pos.x - center_x).abs() < TURN_TOLERANCE
+            && (self.pos.y - center_y).abs() < TURN_TOLERANCE;
+    
+        // Evita que o fantasma fique parado quando começa
+        // em uma direção cuja passagem está bloqueada.
+        if at_center {
+            let tile = (
+                center_x.floor() as i32,
+                center_y.floor() as i32,
+            );
+    
+            let (dx, dy) = match self.dir {
+                Direction::Up    => (0, -1),
+                Direction::Down  => (0, 1),
+                Direction::Left  => (-1, 0),
+                Direction::Right => (1, 0),
+            };
+    
+            let nx = tile.0 + dx;
+            let ny = tile.1 + dy;
+    
+            let blocked =
+                nx < 0
+                || ny < 0
+                || nx >= GRID_WIDTH as i32
+                || ny >= GRID_HEIGHT as i32
+                || map.is_wall(nx as usize, ny as usize);
+    
+            if blocked {
+                let target = self.compute_target(
+                    player_tile,
+                    player_dir,
+                    blinky_tile,
+                    mode,
+                );
+    
+                self.dir = choose_direction(
+                    self.dir,
+                    tile,
+                    target,
+                    map,
+                );
+            }
+        }
+    
+        // Guarda a posição anterior.
+        let old_pos = self.pos;
+    
+        // Movimento normal.
         let new_pos = self.pos + self.dir.vec() * GHOST_SPEED * dt;
+    
         self.pos = clamp_against_wall(new_pos, self.dir, map);
-
-        // 2) Se estiver perto do centro do tile, escolhe nova direção.
-        let tx = self.pos.x.floor();
-        let ty = self.pos.y.floor();
-        let cx = tx + 0.5;
-        let cy = ty + 0.5;
-        if (self.pos.x - cx).abs() < TURN_TOLERANCE
-            && (self.pos.y - cy).abs() < TURN_TOLERANCE
-        {
-            let target = self.compute_target(player_tile, player_dir, blinky_tile, mode);
-            let next = choose_direction(
+    
+        // Detecta o PRÓXIMO centro na direção do movimento.
+        // Importante: o centro atual nunca é considerado
+        // uma nova passagem.
+    
+        let (crossed_center, cx, cy) = match self.dir {
+    
+            Direction::Right => {
+                let cx = (old_pos.x - 0.5).floor() + 1.5;
+                let cy = tile_center(old_pos.y);
+    
+                (
+                    old_pos.x < cx
+                        && self.pos.x >= cx
+                        && (old_pos.y - cy).abs() < TURN_TOLERANCE,
+                    cx,
+                    cy,
+                )
+            }
+    
+            Direction::Left => {
+                let cx = (old_pos.x - 0.5).ceil() - 0.5;
+                let cy = tile_center(old_pos.y);
+    
+                (
+                    old_pos.x > cx
+                        && self.pos.x <= cx
+                        && (old_pos.y - cy).abs() < TURN_TOLERANCE,
+                    cx,
+                    cy,
+                )
+            }
+    
+            Direction::Down => {
+                let cy = (old_pos.y - 0.5).floor() + 1.5;
+                let cx = tile_center(old_pos.x);
+    
+                (
+                    old_pos.y < cy
+                        && self.pos.y >= cy
+                        && (old_pos.x - cx).abs() < TURN_TOLERANCE,
+                    cx,
+                    cy,
+                )
+            }
+    
+            Direction::Up => {
+                let cy = (old_pos.y - 0.5).ceil() - 0.5;
+                let cx = tile_center(old_pos.x);
+    
+                (
+                    old_pos.y > cy
+                        && self.pos.y <= cy
+                        && (old_pos.x - cx).abs() < TURN_TOLERANCE,
+                    cx,
+                    cy,
+                )
+            }
+        };
+    
+        // Ao alcançar o próximo centro, decide a direção.
+        if crossed_center {
+            self.pos = vec2(cx, cy);
+    
+            let tile = (
+                cx.floor() as i32,
+                cy.floor() as i32,
+            );
+    
+            let target = self.compute_target(
+                player_tile,
+                player_dir,
+                blinky_tile,
+                mode,
+            );
+    
+            self.dir = choose_direction(
                 self.dir,
-                (tx as i32, ty as i32),
+                tile,
                 target,
                 map,
             );
-            if next != self.dir {
-                self.dir = next;
-                self.pos = vec2(cx, cy);   // snap no centro
-            }
         }
     }
+
 
     /// Calcula o tile-alvo segundo a personalidade.
     #[inline]
@@ -139,10 +257,13 @@ impl Ghost {
     }
 }
 
-// ---------------------------------------------------------------------------
-// IA: escolhe a direção que minimiza distância AO QUADRADO até o alvo.
-// Sem `sqrt`, sem alocação, sem iteração além de 4 direções fixas.
-// ---------------------------------------------------------------------------
+
+#[inline(always)]
+fn tile_center(v: f32) -> f32 {
+    (v - 0.5).round() + 0.5
+}
+
+/// Escolhe a direção que minimiza distância AO QUADRADO até o alvo.
 #[inline]
 fn choose_direction(
     current: Direction,
