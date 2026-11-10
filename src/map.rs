@@ -1,4 +1,3 @@
-use macroquad::prelude::*;
 use macroquad::rand::{gen_range, srand};
 
 use crate::constants::*;
@@ -126,6 +125,13 @@ impl Map {
         self.tiles[Self::idx(x, y)] == Tile::Wall
     }
 
+    /// Acesso read-only ao grid achatado, usado pelo Renderer.
+    /// Slice emprestado — zero cópia, zero alocação.
+    #[inline(always)]
+    pub fn tiles(&self) -> &[Tile] {
+        &self.tiles
+    }
+
     #[inline(always)]
     pub fn is_wall_or_tunnel(&self, x: usize, y: usize) -> bool {
         matches!(self.tiles[Self::idx(x, y)], Tile::Wall | Tile::Tunnel)
@@ -152,32 +158,5 @@ impl Map {
     #[inline(always)]
     pub fn pellets_remaining(&self) -> usize {
         self.pellets_remaining
-    }
-
-    /// Desenhará o labirinto
-    pub fn draw(&self) {
-        // Índice calculado manualmente evita `%`/`/` por célula no hot loop.
-        for y in 0..GRID_HEIGHT {
-            let py = y as f32 * TILE_SIZE;
-            let row_base = y * GRID_WIDTH;
-            for x in 0..GRID_WIDTH {
-                let t = self.tiles[row_base + x];
-                let px = x as f32 * TILE_SIZE;
-                match t {
-                    Tile::Wall => {
-                        draw_rectangle(px, py, TILE_SIZE, TILE_SIZE, COLOR_WALL);
-                    }
-                    Tile::Pellet => {
-                        let s = TILE_SIZE * 0.28;
-                        let o = (TILE_SIZE - s) * 0.5;
-                        draw_rectangle(px + o, py + o, s, s, COLOR_PELLET);
-                    }
-                    Tile::Tunnel => {
-                        draw_rectangle(px, py, TILE_SIZE, TILE_SIZE, COLOR_TUNNEL);
-                    }
-                    Tile::Empty => {}
-                }
-            }
-        }
     }
 }

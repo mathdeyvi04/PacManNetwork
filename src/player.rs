@@ -145,47 +145,6 @@ impl Player {
             self.pos.x -= GRID_WIDTH as f32;
         }
     }
-
-    /// Desenha o Pac-Man com a boca oscilando na direção atual.
-    pub fn draw(&self) {
-        let cx = self.pos.x * TILE_SIZE;
-        let cy = self.pos.y * TILE_SIZE;
-
-        let t = (get_time() as f32 * 8.0).sin().abs();
-        let half_mouth = 0.05 + t * 0.35;
-
-        // macroquad: +Y aponta para baixo.
-        let base = match self.dir {
-            Direction::Right => 0.0,
-            Direction::Down => std::f32::consts::FRAC_PI_2,
-            Direction::Left => std::f32::consts::PI,
-            Direction::Up => -std::f32::consts::FRAC_PI_2,
-        };
-
-        // O arco desenhado cobre [base + half_mouth, base + TAU - half_mouth],
-        // deixando um vão centrado em `base` — que é o "buraco" da boca.
-        const SEGMENTS: u32 = 20;
-        let start = base + half_mouth;
-        let sweep = std::f32::consts::TAU - 2.0 * half_mouth;
-        let step = sweep / SEGMENTS as f32;
-
-        let center = vec2(cx, cy);
-        // Cache do ponto anterior: 1 cos + 1 sin por segmento em vez de 2 + 2.
-        let mut prev = vec2(
-            cx + PLAYER_RADIUS * start.cos(),
-            cy + PLAYER_RADIUS * start.sin(),
-        );
-
-        for i in 1..=SEGMENTS {
-            let a = start + step * i as f32;
-            let next = vec2(
-                cx + PLAYER_RADIUS * a.cos(),
-                cy + PLAYER_RADIUS * a.sin(),
-            );
-            draw_triangle(center, prev, next, COLOR_PACMAN);
-            prev = next;
-        }
-    }
 }
 
 /// Retorna o centro do tile mais próximo se `v` estiver dentro de

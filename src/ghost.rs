@@ -32,21 +32,6 @@ impl Ghost {
         (self.pos.x.floor() as usize, self.pos.y.floor() as usize)
     }
 
-    #[inline(always)]
-    fn color(&self, mode: GhostMode) -> Color {
-        match (self.kind, mode) {
-            (GhostKind::Blinky, GhostMode::Chase)   => COLOR_CHASE_BLINKY,
-            (GhostKind::Pinky,  GhostMode::Chase)   => COLOR_CHASE_PINKY,
-            (GhostKind::Inky,   GhostMode::Chase)   => COLOR_CHASE_INKY,
-            (GhostKind::Clyde,  GhostMode::Chase)   => COLOR_CHASE_CLYDE,
-    
-            (GhostKind::Blinky, GhostMode::Scatter) => COLOR_SCATTER_BLINKY,
-            (GhostKind::Pinky,  GhostMode::Scatter) => COLOR_SCATTER_PINKY,
-            (GhostKind::Inky,   GhostMode::Scatter) => COLOR_SCATTER_INKY,
-            (GhostKind::Clyde,  GhostMode::Scatter) => COLOR_SCATTER_CLYDE,
-        }
-    }
-
     /// Atualiza um fantasma. Tudo passado por valor (Copy) → sem borrow
     /// cruzado entre ghosts; o `Game` pode iterar `iter_mut()` sem split.
     pub fn update(
@@ -249,17 +234,6 @@ impl Ghost {
             GhostKind::Inky   => (w, h),
             GhostKind::Clyde  => (1, h),
         }
-    }
-
-    /// Desenha como quadrado — coerente com o estilo do Pac-Man "sem sprites".
-    pub fn draw(&self, blink: bool, mode: GhostMode) {
-        let s = GHOST_RADIUS * 2.0;
-        let color = if blink { COLOR_GHOST_BLINK } else { self.color(mode) };
-        draw_rectangle(
-            self.pos.x * TILE_SIZE - GHOST_RADIUS,
-            self.pos.y * TILE_SIZE - GHOST_RADIUS,
-            s, s, color,
-        );
     }
 }
 

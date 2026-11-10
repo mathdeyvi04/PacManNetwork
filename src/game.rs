@@ -1,8 +1,8 @@
-use macroquad::prelude::*;
 use crate::constants::*;
 use crate::ghost::{Ghost, GhostKind, GhostMode};
 use crate::map::Map;
 use crate::player::{Direction, Player};
+use crate::controller::Action;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GameState { Playing, GameOver, Win }
@@ -12,11 +12,7 @@ pub struct Game {
     pub player: Player,
     pub score: u32,
     score_text: String,
-
-    // Array fixo em vez de Vec: 4 × ~16 bytes = 64 bytes na stack do Game.
-    // Zero indireção, zero alocação, cache-friendly.
     ghosts: [Ghost; GHOST_COUNT],
-
     state: GameState,
     mode: GhostMode,
     mode_timer: f32,
@@ -48,6 +44,12 @@ impl Game {
         }
     }
 
+    #[inline(always)] pub fn state(&self)      -> GameState   { self.state }
+    #[inline(always)] pub fn mode(&self)       -> GhostMode   { self.mode }
+    #[inline(always)] pub fn mode_timer(&self) -> f32         { self.mode_timer }
+    #[inline(always)] pub fn ghosts(&self)     -> &[Ghost]    { &self.ghosts }
+    #[inline(always)] pub fn score_text(&self) -> &str        { &self.score_text }
+
     #[inline(always)]
     pub fn is_game_over(&self) -> bool {
         self.state == GameState::GameOver
@@ -61,29 +63,25 @@ impl Game {
         let _ = write!(self.score_text, "Score: {}", self.score);
     }
 
-    pub fn update(&mut self, dt: f32) {
+    pub fn update(&mut self, dt: f32, action: Action) {
         if self.state != GameState::Playing { return; }
-
-        // --- Input ---
-        if is_key_pressed(KeyCode::Right) || is_key_pressed(KeyCode::D) { self.player.set_pending(Direction::Right); }
-        if is_key_pressed(KeyCode::Left)  || is_key_pressed(KeyCode::A) { self.player.set_pending(Direction::Left);  }
-        if is_key_pressed(KeyCode::Up)    || is_key_pressed(KeyCode::W) { self.player.set_pending(Direction::Up);    }
-        if is_key_pressed(KeyCode::Down)  || is_key_pressed(KeyCode::S) { self.player.set_pending(Direction::Down);  }
-
+    
+        // --- Input (via Action) ---
+        if let Action::Move(dir) = action {
+            self.player.set_pending(dir);
+        }
+    
         // --- Player ---
         self.player.update(&self.map, dt);
         let (tx, ty) = self.player.tile();
-        if self.map.eat_pellet(tx, ty) { 
-            self.add_score(PELLET_SCORE); 
-            if self.map.eat_pellet(tx, ty) {
-                self.add_score(PELLET_SCORE);
-                if self.map.pellets_remaining() == 0 {
-                    self.state = GameState::Win;
-                    return;                     // não deixa fantasma matar no mesmo frame
-                }
+        if self.map.eat_pellet(tx, ty) {
+            self.add_score(PELLET_SCORE);
+            if self.map.pellets_remaining() == 0 {
+                self.state = GameState::Win;
+                return;                     // não deixa fantasma matar no mesmo frame
             }
         }
-
+    
         // --- Timer scatter/chase ---
         self.mode_timer -= dt;
         if self.mode_timer <= 0.0 {
@@ -98,18 +96,18 @@ impl Game {
             // Reverter todos ao trocar de modo (regra clássica).
             for g in &mut self.ghosts { g.dir = g.dir.opposite(); }
         }
-
+    
         // --- Fantasmas ---
         // Snapshot dos dados compartilhados → sem split-borrow manual.
         let player_tile = self.player.tile();
         let player_dir  = self.player.dir;
         let blinky_tile = self.ghosts[0].tile();
-        let mode = self.mode;
-        let map_ref = &self.map;
+        let mode        = self.mode;
+        let map_ref     = &self.map;
         for g in &mut self.ghosts {
             g.update(map_ref, player_tile, player_dir, blinky_tile, mode, dt);
         }
-
+    
         // --- Colisão Pac-Man × fantasma (distância², sem sqrt) ---
         let ppos = self.player.pos;
         for g in &self.ghosts {
@@ -119,35 +117,6 @@ impl Game {
                 self.state = GameState::GameOver;
                 return;
             }
-        }
-    }
-
-    pub fn draw(&self) {
-        self.map.draw();
-        
-        // Aviso de troca de modo: últimos 2 s do timer, fantasmas piscam a 4 Hz.
-        let warning = self.state == GameState::Playing
-            && self.mode_timer < MODE_WARNING_DURATION;
-        let blink_on = warning && (((get_time() * 4.0) as i32) & 1) == 0;
-    
-        for g in &self.ghosts { g.draw(blink_on, self.mode); }
-        self.player.draw();
-
-        draw_text(&self.score_text, 8.0, 16.0, 22.0, COLOR_SCORE);
-
-        if self.state == GameState::GameOver {
-            let (w, h) = (screen_width(), screen_height());
-            draw_rectangle(0.0, 0.0, w, h, COLOR_OVERLAY);
-            draw_text("GAME OVER", w * 0.5 - 110.0, h * 0.5 - 10.0, 44.0, COLOR_GAME_OVER);
-            draw_text("Press SPACE", w * 0.5 - 78.0, h * 0.5 + 40.0, 24.0, WHITE);
-        }
-        
-        if self.state == GameState::Win {
-            let (w, h) = (screen_width(), screen_height());
-            draw_rectangle(0.0, 0.0, w, h, COLOR_OVERLAY);
-            draw_text("YOU WIN!", w * 0.5 - 100.0, h * 0.5 - 10.0, 44.0, COLOR_WIN);
-            draw_text(&self.score_text, w * 0.5 - 70.0, h * 0.5 + 30.0, 24.0, WHITE);
-            draw_text("Press SPACE", w * 0.5 - 78.0, h * 0.5 + 70.0, 24.0, WHITE);
         }
     }
 
