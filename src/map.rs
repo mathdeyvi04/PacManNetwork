@@ -1,6 +1,5 @@
-use macroquad::rand::{gen_range, srand};
-
 use crate::constants::*;
+use crate::rng::{fresh_seed, Rng};
 
 /// Conteúdo de uma célula do grid.
 #[repr(u8)]
@@ -13,28 +12,40 @@ pub enum Tile {
 }
 
 /// Labirinto em grid de tiles.
+#[derive(Clone)]
 pub struct Map {
-    /// Grid achatado: `tiles[y * GRID_WIDTH + x]`.
     tiles: Vec<Tile>,
-    /// Pontos Restando
+
+    /// Quantidade atual de pellets.
     pellets_remaining: usize,
+
+    /// Quantidade original de pellets.
+    total_pellets: usize,
+
+    /// Somente posições dos pellets ainda existentes.
+    pellet_positions: Vec<u16>,
+
+    /// Índice inverso: posição no mapa -> posição em pellet_positions.
+    ///
+    /// u16::MAX significa que não existe pellet naquela célula.
+    pellet_slots: Vec<u16>,
 }
 
 impl Map {
-    
     /// Converte coordenadas `(x, y)` no índice flat do vetor `tiles`.
     #[inline(always)]
     fn idx(x: usize, y: usize) -> usize {
         y * GRID_WIDTH + x
     }
 
-    /// Gera um labirinto novo com pastilhas preenchidas.
+    /// Gera um mapa aleatório.
     pub fn generate() -> Self {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
-        srand(seed);
+        Self::generate_seeded(fresh_seed())
+    }
+    
+    /// Gera um mapa utilizando uma seed específica.
+    pub fn generate_seeded(seed: u64) -> Self {
+        let mut rng = Rng::new(seed);
 
         let mut tiles = vec![Tile::Wall; GRID_WIDTH * GRID_HEIGHT];
 
@@ -74,7 +85,7 @@ impl Map {
             if n_count == 0 {
                 stack.pop();
             } else {
-                let (nx, ny, dx, dy) = neighbors[gen_range(0, n_count)];
+                let (nx, ny, dx, dy) = neighbors[rng.range_usize(n_count)];
 
                 // Escava o muro entre a célula atual e a vizinha escolhida.
                 tiles[Self::idx((x as i32 + dx / 2) as usize,
@@ -97,7 +108,7 @@ impl Map {
                 if tiles[Self::idx(x, y + 1)] != Tile::Wall { cn += 1; }
                 if tiles[Self::idx(x - 1, y)] != Tile::Wall { cn += 1; }
                 if tiles[Self::idx(x + 1, y)] != Tile::Wall { cn += 1; }
-                if cn >= 2 && gen_range(0, 100) < 35 {
+                if cn >= 2 && rng.range_usize(100) < 35 {
                     tiles[i] = Tile::Empty;
                 }
             }
@@ -109,15 +120,43 @@ impl Map {
         tiles[Self::idx(GRID_WIDTH - 2, TUNNEL_ROW)] = Tile::Empty;
         
         // (fill de pellets já existente abaixo — converte Empty→Pellet)
-        let mut pellets_remaining = 0usize;
-        for t in tiles.iter_mut() {
-            if *t == Tile::Empty {
-                *t = Tile::Pellet;
-                pellets_remaining += 1;
+        let mut pellet_positions =
+            Vec::with_capacity(tiles.len());
+        
+        let mut pellet_slots =
+            vec![u16::MAX; tiles.len()];
+        
+        for (index, tile) in tiles.iter_mut().enumerate() {
+            if *tile == Tile::Empty {
+                *tile = Tile::Pellet;
+        
+                pellet_slots[index] = pellet_positions.len() as u16;
+        
+                pellet_positions.push(index as u16);
             }
         }
+        
+        let total_pellets = pellet_positions.len();
+        
+        let pellets_remaining = total_pellets;
+        
+        Map {
+            tiles,
+            pellets_remaining,
+            total_pellets,
+            pellet_positions,
+            pellet_slots,
+        }
+    }
 
-        Map { tiles, pellets_remaining }
+    #[inline(always)]
+    pub fn total_pellets(&self) -> usize {
+        self.total_pellets
+    }
+
+    #[inline(always)]
+    pub fn pellet_positions(&self) -> &[u16] {
+        &self.pellet_positions
     }
 
     #[inline(always)]
@@ -145,13 +184,34 @@ impl Map {
     /// Consome a pastilha do tile, se houver. Retorna `true` se comeu.
     pub fn eat_pellet(&mut self, x: usize, y: usize) -> bool {
         let i = Self::idx(x, y);
-        if self.tiles[i] == Tile::Pellet {
-            self.tiles[i] = Tile::Empty;
-            self.pellets_remaining = self.pellets_remaining.saturating_sub(1);
-            true
-        } else {
-            false
+    
+        if self.tiles[i] != Tile::Pellet {
+            return false;
         }
+    
+        self.tiles[i] = Tile::Empty;
+    
+        self.pellets_remaining -= 1;
+    
+        let slot = self.pellet_slots[i] as usize;
+    
+        debug_assert!(slot < self.pellet_positions.len());
+    
+        // Último elemento que poderá ser movido para preencher
+        // o espaço deixado pelo pellet removido.
+        let moved_index = *self.pellet_positions.last().unwrap() as usize;
+    
+        self.pellet_positions.swap_remove(slot);
+    
+        // Invalida o índice do pellet consumido.
+        self.pellet_slots[i] = u16::MAX;
+    
+        // Atualiza a posição do elemento que foi deslocado.
+        if slot < self.pellet_positions.len() {
+            self.pellet_slots[moved_index] = slot as u16;
+        }
+    
+        true
     }
 
     /// Getter para obtermos o total de pontos restando

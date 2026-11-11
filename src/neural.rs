@@ -4,7 +4,7 @@
 //! Formato de arquivo próprio (magic + header + f32 LE).
 
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Write, BufWriter};
 use std::path::Path;
 
 use crate::constants::*;
@@ -12,6 +12,7 @@ use crate::controller::{Action, Controller};
 use crate::game::Game;
 use crate::map::Tile;
 use crate::player::Direction;
+use crate::rng::Rng;
 
 // ---------------------------------------------------------------------------
 // Arquitetura
@@ -29,6 +30,7 @@ pub const OUTPUT_SIZE: usize = 4;
 const MAGIC: &[u8; 8] = b"PACNET01";
 const VERSION: u32 = 1;
 
+#[derive(Clone)]
 pub struct NeuralNet {
     // w1[j][i]  → j em [0,HIDDEN), i em [0,INPUT)
     w1: [f32; HIDDEN_SIZE * INPUT_SIZE],
@@ -41,19 +43,56 @@ pub struct NeuralNet {
 impl NeuralNet {
     pub fn random(seed: u64) -> Self {
         let mut rng = Rng::new(seed);
+    
         let mut net = Self {
             w1: [0.0; HIDDEN_SIZE * INPUT_SIZE],
             b1: [0.0; HIDDEN_SIZE],
+    
             w2: [0.0; OUTPUT_SIZE * HIDDEN_SIZE],
             b2: [0.0; OUTPUT_SIZE],
         };
-        // Xavier-ish uniforme.
-        let s1 = 2.0 / (INPUT_SIZE  as f32).sqrt();
+    
+        let s1 = 2.0 / (INPUT_SIZE as f32).sqrt();
         let s2 = 2.0 / (HIDDEN_SIZE as f32).sqrt();
-        for w in net.w1.iter_mut() { *w = rng.range(-s1, s1); }
-        for w in net.w2.iter_mut() { *w = rng.range(-s2, s2); }
-        // b1, b2 ficam 0.
+    
+        for w in net.w1.iter_mut() {
+            *w = rng.range_f32(-s1, s1);
+        }
+    
+        for w in net.w2.iter_mut() {
+            *w = rng.range_f32(-s2, s2);
+        }
+    
         net
+    }
+
+    /// Cria um descendente desta rede através de mutações aleatórias.
+    ///
+    /// mutation_rate: probabilidade de cada parâmetro sofrer alteração.
+    /// mutation_std: desvio padrão do ruído aplicado aos parâmetros.
+    pub fn mutated(
+        &self,
+        seed: u64,
+        mutation_rate: f32,
+        mutation_std: f32,
+    ) -> Self {
+        let mut child = self.clone();
+    
+        let mut rng = Rng::new(seed);
+    
+        let rate = mutation_rate.clamp(0.0, 1.0);
+    
+        for weight in child.w1.iter_mut()
+            .chain(child.b1.iter_mut())
+            .chain(child.w2.iter_mut())
+            .chain(child.b2.iter_mut())
+        {
+            if rng.unit_f32() < rate {
+                *weight += rng.normal_f32() * mutation_std;
+            }
+        }
+    
+        child
     }
 
     #[inline]
@@ -96,7 +135,12 @@ impl NeuralNet {
     #[inline(always)] pub fn b2(&self) -> &[f32; OUTPUT_SIZE]               { &self.b2 }
 
     pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
-        let mut f = File::create(path)?;
+        let file = File::create(path)?;
+        
+        let mut f = BufWriter::with_capacity(
+            32 * 1024,
+            file,
+        );
         f.write_all(MAGIC)?;
         f.write_all(&VERSION.to_le_bytes())?;
         f.write_all(&(INPUT_SIZE  as u32).to_le_bytes())?;
@@ -109,6 +153,7 @@ impl NeuralNet {
         {
             f.write_all(&w.to_le_bytes())?;
         }
+        f.flush()?;
         Ok(())
     }
 
@@ -242,20 +287,29 @@ pub fn encode(game: &Game) -> [f32; INPUT_SIZE] {
     idx += 2;
 
     // 5) Pellet mais próximo (varredura linear — 1023 iterações, trivial)
+    // 5) Pellet mais próximo
+    
     let mut best_pd2 = i32::MAX;
     let mut pvec = (0.0f32, 0.0f32);
-    let tiles = game.map.tiles();
-    for y in 0..GRID_HEIGHT {
-        for x in 0..GRID_WIDTH {
-            if tiles[y * GRID_WIDTH + x] == Tile::Pellet {
-                let dx = x as i32 - cx;
-                let dy = y as i32 - cy;
-                let d2 = dx * dx + dy * dy;
-                if d2 < best_pd2 {
-                    best_pd2 = d2;
-                    pvec = (dx as f32 * inv_w, dy as f32 * inv_h);
-                }
-            }
+    
+    for &flat_index in game.map.pellet_positions() {
+        let index = flat_index as usize;
+    
+        let x = (index % GRID_WIDTH) as i32;
+        let y = (index / GRID_WIDTH) as i32;
+    
+        let dx = x - cx;
+        let dy = y - cy;
+    
+        let d2 = dx * dx + dy * dy;
+    
+        if d2 < best_pd2 {
+            best_pd2 = d2;
+    
+            pvec = (
+                dx as f32 * inv_w,
+                dy as f32 * inv_h,
+            );
         }
     }
     f[idx]     = pvec.0;
@@ -264,9 +318,80 @@ pub fn encode(game: &Game) -> [f32; INPUT_SIZE] {
     f
 }
 
+pub fn action_from_output(
+    game: &Game,
+    reverse_cooldown: &mut u8,
+    output: &[f32; OUTPUT_SIZE],
+) -> Action {
+
+    if game.is_finished() {
+        return Action::Restart;
+    }
+
+    if *reverse_cooldown > 0 {
+        *reverse_cooldown -= 1;
+    }
+
+    let mut best = 0usize;
+    let mut best_v = output[0];
+
+    for k in 1..OUTPUT_SIZE {
+        if output[k] > best_v {
+            best = k;
+            best_v = output[k];
+        }
+    }
+
+    let dir = match best {
+        0 => Direction::Up,
+        1 => Direction::Down,
+        2 => Direction::Left,
+        _ => Direction::Right,
+    };
+
+    if dir == game.player.dir.opposite() {
+        if *reverse_cooldown > 0 {
+            return Action::Move(game.player.dir);
+        }
+
+        *reverse_cooldown = 8;
+    }
+
+    Action::Move(dir)
+}
+
+/// Executa a inferência e determina a ação da rede.
+///
+/// Esta função é compartilhada entre o modo neural convencional
+/// e o modo de treinamento genético.
+pub fn infer_action(
+    net: &NeuralNet,
+    game: &Game,
+    reverse_cooldown: &mut u8,
+    input: &mut [f32; INPUT_SIZE],
+    hidden: &mut [f32; HIDDEN_SIZE],
+    output: &mut [f32; OUTPUT_SIZE],
+) -> Action {
+
+    if game.is_finished() {
+        return Action::Restart;
+    }
+
+    *input = encode(game);
+
+    net.forward_into(input, hidden, output);
+
+    action_from_output(
+        game,
+        reverse_cooldown,
+        output,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Controller
 // ---------------------------------------------------------------------------
+
 
 pub struct NeuralController {
     net: NeuralNet,
@@ -305,65 +430,13 @@ impl NeuralController {
 
 impl Controller for NeuralController {
     fn poll(&mut self, game: &Game) -> Action {
-        if game.is_finished() {
-            return Action::Restart;
-        }
-
-        if self.reverse_cooldown > 0 {
-            self.reverse_cooldown -= 1;
-        }
-
-        let x = encode(game);
-        self.last_input = x;
-        self.net.forward_into(&x, &mut self.last_hidden, &mut self.last_output);
-
-        // argmax
-        let mut best = 0usize;
-        let mut best_v = self.last_output[0];
-        for k in 1..OUTPUT_SIZE {
-            if self.last_output[k] > best_v { best = k; best_v = self.last_output[k]; }
-        }
-        let dir = match best {
-            0 => Direction::Up,
-            1 => Direction::Down,
-            2 => Direction::Left,
-            _ => Direction::Right,
-        };
-
-        // Anti-jitter: ignora inversão durante cooldown.
-        if dir == game.player.dir.opposite() {
-            if self.reverse_cooldown > 0 {
-                return Action::Move(game.player.dir);
-            }
-            self.reverse_cooldown = 8; // ~130 ms @ 60 fps
-        }
-
-        Action::Move(dir)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// RNG determinístico (xorshift64)
-// ---------------------------------------------------------------------------
-
-struct Rng { state: u64 }
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Self { state: if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed } }
-    }
-    #[inline] fn next(&mut self) -> u64 {
-        let mut x = self.state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.state = x;
-        x
-    }
-    #[inline] fn unit(&mut self) -> f32 {
-        ((self.next() >> 40) as f32) / ((1u64 << 24) as f32)
-    }
-    #[inline] fn range(&mut self, low: f32, high: f32) -> f32 {
-        low + (high - low) * self.unit()
+        infer_action(
+            &self.net,
+            game,
+            &mut self.reverse_cooldown,
+            &mut self.last_input,
+            &mut self.last_hidden,
+            &mut self.last_output,
+        )
     }
 }

@@ -15,16 +15,16 @@ use crate::neural::{NeuralController, HIDDEN_SIZE, OUTPUT_SIZE};
 // Layout — alinhado e centrado no painel de 260 px.
 const CONTENT_Y: f32 = 40.0;
 
-const VISION_X:    f32 = 80.0;
+const VISION_X:    f32 = 70.0;
 const VISION_CELL: f32 = 16.0;
-const STATE_X:     f32 = VISION_X + 7.0 * VISION_CELL + 16.0; // 208
+const STATE_X:     f32 = VISION_X + 7.0 * VISION_CELL + 16.0; 
 const STATE_W:     f32 = 20.0;
 const STATE_STEP:  f32 = 24.0;
 
-const HIDDEN_X:    f32 = STATE_X + STATE_W + 40.0; // 268
+const HIDDEN_X:    f32 = STATE_X + STATE_W + 40.0; 
 const HIDDEN_CELL: f32 = 18.0;
 
-const OUTPUT_X:    f32 = HIDDEN_X + 8.0 * HIDDEN_CELL + 40.0; // 452
+const OUTPUT_X:    f32 = HIDDEN_X + 8.0 * HIDDEN_CELL + 40.0; 
 const OUTPUT_W:    f32 = 24.0;
 const OUTPUT_STEP: f32 = 44.0;
 
