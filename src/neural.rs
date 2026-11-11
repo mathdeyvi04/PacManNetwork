@@ -16,13 +16,15 @@ use crate::player::Direction;
 // ---------------------------------------------------------------------------
 // Arquitetura
 // ---------------------------------------------------------------------------
+// 
+// Seguinte, ajude-me a resolver alguns pontos da visualização da rede
 
 const VISION: usize = 7;
 const HALF: i32 = (VISION as i32) / 2;
 
-const INPUT_SIZE:  usize = VISION * VISION + 4 + 2 + 2; // 57
-const HIDDEN_SIZE: usize = 64;
-const OUTPUT_SIZE: usize = 4;
+pub const INPUT_SIZE:  usize = VISION * VISION + 4 + 2 + 2; // 57
+pub const HIDDEN_SIZE: usize = 64;
+pub const OUTPUT_SIZE: usize = 4;
 
 const MAGIC: &[u8; 8] = b"PACNET01";
 const VERSION: u32 = 1;
@@ -55,17 +57,20 @@ impl NeuralNet {
     }
 
     #[inline]
-    pub fn forward(&self, x: &[f32; INPUT_SIZE]) -> [f32; OUTPUT_SIZE] {
-        let mut h = [0.0f32; HIDDEN_SIZE];
+    pub fn forward_into(
+        &self,
+        x: &[f32; INPUT_SIZE],
+        h: &mut [f32; HIDDEN_SIZE],
+        y: &mut [f32; OUTPUT_SIZE],
+    ) {
         for j in 0..HIDDEN_SIZE {
             let row = &self.w1[j * INPUT_SIZE..(j + 1) * INPUT_SIZE];
             let mut s = self.b1[j];
             for i in 0..INPUT_SIZE {
                 s += row[i] * x[i];
             }
-            h[j] = if s > 0.0 { s } else { 0.0 }; // ReLU
+            h[j] = if s > 0.0 { s } else { 0.0 };
         }
-        let mut y = [0.0f32; OUTPUT_SIZE];
         for k in 0..OUTPUT_SIZE {
             let row = &self.w2[k * HIDDEN_SIZE..(k + 1) * HIDDEN_SIZE];
             let mut s = self.b2[k];
@@ -74,8 +79,21 @@ impl NeuralNet {
             }
             y[k] = s;
         }
+    }
+
+    #[inline]
+    pub fn forward(&self, x: &[f32; INPUT_SIZE]) -> [f32; OUTPUT_SIZE] {
+        let mut h = [0.0f32; HIDDEN_SIZE];
+        let mut y = [0.0f32; OUTPUT_SIZE];
+        self.forward_into(x, &mut h, &mut y);
         y
     }
+
+    // Acessores read-only para a visualização (sem cópia, sem alocação).
+    #[inline(always)] pub fn w1(&self) -> &[f32; HIDDEN_SIZE * INPUT_SIZE]  { &self.w1 }
+    #[inline(always)] pub fn w2(&self) -> &[f32; OUTPUT_SIZE * HIDDEN_SIZE] { &self.w2 }
+    #[inline(always)] pub fn b1(&self) -> &[f32; HIDDEN_SIZE]               { &self.b1 }
+    #[inline(always)] pub fn b2(&self) -> &[f32; OUTPUT_SIZE]               { &self.b2 }
 
     pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
         let mut f = File::create(path)?;
@@ -141,6 +159,22 @@ fn read_u32(f: &mut File) -> io::Result<u32> {
 // Encoding de features
 // ---------------------------------------------------------------------------
 
+/// Codifica o estado do jogo em 57 floats, divididos em 4 grupos:
+///
+/// **Grupo 1 — Visão local 7×7 (`[0..49)`).**
+/// Janela 7×7 centrada no tile do Pac-Man. Conteúdo de cada célula:
+/// `1.0` parede/túnel, `0.5` pellet, `0.0` vazio, `-1.0` fantasma
+/// (fantasmas sobrescrevem o tile). Fora do mapa conta como parede.
+///
+/// **Grupo 2 — Direção atual (`[49..53)`).**
+/// One-hot `[Up, Down, Left, Right]` — exatamente um `1.0`.
+///
+/// **Grupo 3 — Fantasma mais próximo (`[53..55)`).**
+/// `(dx, dy)` em tiles, normalizado pelos lados do grid, apontando do
+/// Pac-Man para o centro do tile do fantasma mais próximo.
+///
+/// **Grupo 4 — Pellet mais próximo (`[55..57)`).**
+/// `(dx, dy)` em tiles, normalizado idem, para o pellet mais próximo.
 pub fn encode(game: &Game) -> [f32; INPUT_SIZE] {
     let mut f = [0.0f32; INPUT_SIZE];
     let (px, py) = game.player.tile();
@@ -237,12 +271,24 @@ pub fn encode(game: &Game) -> [f32; INPUT_SIZE] {
 pub struct NeuralController {
     net: NeuralNet,
     reverse_cooldown: u8,
+    pub last_input:  [f32; INPUT_SIZE],
+    pub last_hidden: [f32; HIDDEN_SIZE],
+    pub last_output: [f32; OUTPUT_SIZE],
 }
 
 impl NeuralController {
     pub fn new(net: NeuralNet) -> Self {
-        Self { net, reverse_cooldown: 0 }
+        Self {
+            net,
+            reverse_cooldown: 0,
+            last_input:  [0.0; INPUT_SIZE],
+            last_hidden: [0.0; HIDDEN_SIZE],
+            last_output: [0.0; OUTPUT_SIZE],
+        }
     }
+
+    #[inline(always)]
+    pub fn net(&self) -> &NeuralNet { &self.net }
 
     pub fn random() -> Self {
         let seed = std::time::SystemTime::now()
@@ -268,13 +314,14 @@ impl Controller for NeuralController {
         }
 
         let x = encode(game);
-        let y = self.net.forward(&x);
+        self.last_input = x;
+        self.net.forward_into(&x, &mut self.last_hidden, &mut self.last_output);
 
         // argmax
         let mut best = 0usize;
-        let mut best_v = y[0];
+        let mut best_v = self.last_output[0];
         for k in 1..OUTPUT_SIZE {
-            if y[k] > best_v { best = k; best_v = y[k]; }
+            if self.last_output[k] > best_v { best = k; best_v = self.last_output[k]; }
         }
         let dir = match best {
             0 => Direction::Up,

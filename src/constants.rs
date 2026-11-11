@@ -42,6 +42,12 @@ pub const DETOUR_LEN: u8 = 4;
 pub const COLOR_GAME_OVER:    Color = Color::new(1.0, 0.2, 0.2, 1.0);
 pub const COLOR_OVERLAY:      Color = Color::new(0.0, 0.0, 0.0, 0.75);
 
+// ---------------------------------------------------------------------------
+// Painel de visualização da rede neural (abaixo do mapa)
+// ---------------------------------------------------------------------------
+pub const NEURAL_PANEL_HEIGHT: f32 = 260.0;
+pub const WINDOW_HEIGHT_TOTAL: i32 = WINDOW_HEIGHT + NEURAL_PANEL_HEIGHT as i32;
+
 // Cores base (usadas como fallback / identidade)
 // --- CHASE: cores agressivas (alta saturação / brilho) ---
 pub const COLOR_CHASE_BLINKY: Color = Color::new(1.00, 0.00, 0.00, 1.0); // vermelho puro

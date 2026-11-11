@@ -6,20 +6,30 @@ mod map;
 mod neural;
 mod player;
 mod renderer;
+mod neural_viz;
 
 use constants::*;
 use controller::{Action, Controller, KeyboardController};
 use game::Game;
 use neural::NeuralController;
 use renderer::Renderer;
+use neural_viz::NeuralViz;
 
 use macroquad::prelude::*;
+
+
+fn is_neural_mode() -> bool {
+    matches!(
+        std::env::args().nth(1).as_deref(),
+        Some("nn") | Some("neural")
+    )
+}
 
 fn window_conf() -> Conf {
     Conf {
         window_title: "Pac-Man".to_owned(),
         window_width: WINDOW_WIDTH,
-        window_height: WINDOW_HEIGHT,
+        window_height: if is_neural_mode() { WINDOW_HEIGHT_TOTAL } else { WINDOW_HEIGHT },
         window_resizable: false,
         ..Default::default()
     }
@@ -91,6 +101,13 @@ enum AnyController {
     Neural(NeuralController),
 }
 
+impl AnyController {
+    #[inline]
+    pub fn as_neural(&self) -> Option<&NeuralController> {
+        match self { Self::Neural(c) => Some(c), _ => None }
+    }
+}
+
 impl Controller for AnyController {
     #[inline]
     fn poll(&mut self, game: &Game) -> Action {
@@ -140,6 +157,12 @@ async fn main() {
         }
 
         renderer.draw(&game);
+
+        // Painel neural abaixo do mapa (só no modo NN).
+        if let Some(nn) = controller.as_neural() {
+            NeuralViz::draw(nn, WINDOW_HEIGHT as f32);
+        }
+
         next_frame().await;
     }
 }
