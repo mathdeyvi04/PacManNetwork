@@ -34,7 +34,7 @@ pub const DT: f32 = 1.0 / 60.0;
 /// Gerações. Aumentado de 50→200: com o bug de congelamento corrigido,
 /// a curva tende a subir de forma consistente e precisa de orçamento
 /// para mostrar todo o progresso possível.
-pub const N_GENERATIONS: usize = 200;
+pub const N_GENERATIONS: usize = 1000;
 
 /// Elites preservados intactos. Aumentado de 5→8: pool um pouco maior
 /// de top performers (diversidade na base da população seguinte).

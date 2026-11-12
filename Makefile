@@ -16,7 +16,7 @@ nn_map_random:
 
 # Rede treinada sobre o mapa dado
 nn:
-	cargo run --bin PacManNetwork -- nn best_gen_080.bin map.bin
+	cargo run --bin PacManNetwork -- nn best_gen_832.bin map.bin
 
 test:
 	cargo run --bin train
