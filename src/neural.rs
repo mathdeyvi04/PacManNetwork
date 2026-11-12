@@ -1,6 +1,6 @@
-//! Inferência de rede neural (MLP 57 → 64 → 4) jogando Pac-Man.
+//! Inferência de rede neural (MLP 4 → 16 → 4) jogando Pac-Man.
 //!
-//! Sem heap no forward pass. Pesos em arrays fixos (≈16 KB).
+//! Sem heap no forward pass. Pesos em arrays fixos (≈600 bytes).
 //! Formato de arquivo próprio (magic + header + f32 LE).
 
 use std::fs::File;
@@ -10,24 +10,27 @@ use std::path::Path;
 use crate::constants::*;
 use crate::controller::{Action, Controller};
 use crate::game::Game;
-use crate::map::Tile;
+use crate::ghost::Ghost;               // NOVO
+use crate::map::{Map, Tile};           // Map NOVO
 use crate::player::Direction;
 
 // ---------------------------------------------------------------------------
-// Arquitetura
+// Arquitetura — 4 sensores direcionais → 16 ocultos → 4 saídas
 // ---------------------------------------------------------------------------
-// 
-// Seguinte, ajude-me a resolver alguns pontos da visualização da rede
 
-const VISION: usize = 7;
-const HALF: i32 = (VISION as i32) / 2;
-
-pub const INPUT_SIZE:  usize = VISION * VISION + 4 + 2 + 2; // 57
-pub const HIDDEN_SIZE: usize = 64;
+pub const INPUT_SIZE:  usize = 4;
+pub const HIDDEN_SIZE: usize = 16;     // 4× a dimensão de entrada
 pub const OUTPUT_SIZE: usize = 4;
 
 const MAGIC: &[u8; 8] = b"PACNET01";
 const VERSION: u32 = 1;
+
+// Codificação escalar de cada categoria (ordem semântica: perigo → recompensa)
+const ENC_GHOST:   f32 = -1.0;         // morte iminente
+const ENC_WALL:    f32 = -0.5;         // bloqueio permanente
+const ENC_NOTHING: f32 =  0.0;         // neutro
+const ENC_TUNNEL:  f32 =  0.5;         // fuga segura
+const ENC_PELLET:  f32 =  1.0;         // recompensa
 
 pub struct NeuralNet {
     // w1[j][i]  → j em [0,HIDDEN), i em [0,INPUT)
@@ -156,112 +159,101 @@ fn read_u32(f: &mut File) -> io::Result<u32> {
 }
 
 // ---------------------------------------------------------------------------
-// Encoding de features
+// Encoding
 // ---------------------------------------------------------------------------
 
-/// Codifica o estado do jogo em 57 floats, divididos em 4 grupos:
+/// 4 sensores direcionais. Para cada direção, faz raycast a partir do tile
+/// adjacente ao Pac-Man e reporta **o primeiro evento significativo**:
 ///
-/// **Grupo 1 — Visão local 7×7 (`[0..49)`).**
-/// Janela 7×7 centrada no tile do Pac-Man. Conteúdo de cada célula:
-/// `1.0` parede/túnel, `0.5` pellet, `0.0` vazio, `-1.0` fantasma
-/// (fantasmas sobrescrevem o tile). Fora do mapa conta como parede.
+/// * fantasma → -1.0 (prioridade sobre qualquer tile — sobrevivência primeiro)
+/// * parede  → -0.5
+/// * túnel   → +0.5 (inclui wrap-around na linha do túnel)
+/// * pellet  → +1.0
+/// * nada    →  0.0 (raycast chegou à borda sem encontrar nada)
 ///
-/// **Grupo 2 — Direção atual (`[49..53)`).**
-/// One-hot `[Up, Down, Left, Right]` — exatamente um `1.0`.
-///
-/// **Grupo 3 — Fantasma mais próximo (`[53..55)`).**
-/// `(dx, dy)` em tiles, normalizado pelos lados do grid, apontando do
-/// Pac-Man para o centro do tile do fantasma mais próximo.
-///
-/// **Grupo 4 — Pellet mais próximo (`[55..57)`).**
-/// `(dx, dy)` em tiles, normalizado idem, para o pellet mais próximo.
+/// Ordem das 4 entradas: `[Up, Down, Left, Right]` — casa com a ordem do
+/// argmax em `NeuralController::poll`.
 pub fn encode(game: &Game) -> [f32; INPUT_SIZE] {
-    let mut f = [0.0f32; INPUT_SIZE];
     let (px, py) = game.player.tile();
-    let cx = px as i32;
-    let cy = py as i32;
-
-    // 1) Visão local 7×7
-    let mut idx = 0usize;
-    for dy in -HALF..=HALF {
-        for dx in -HALF..=HALF {
-            let nx = cx + dx;
-            let ny = cy + dy;
-            if nx < 0 || ny < 0 || nx >= GRID_WIDTH as i32 || ny >= GRID_HEIGHT as i32 {
-                f[idx] = 1.0; // OOB = parede
-            } else {
-                f[idx] = match game.map.tile_at(nx as usize, ny as usize) {
-                    Tile::Wall | Tile::Tunnel => 1.0,
-                    Tile::Empty              => 0.0,
-                    Tile::Pellet             => 0.5,
-                };
-            }
-            idx += 1;
-        }
+    const DIRS: [Direction; 4] = [
+        Direction::Up,
+        Direction::Down,
+        Direction::Left,
+        Direction::Right,
+    ];
+    let mut f = [ENC_NOTHING; INPUT_SIZE];
+    for (i, &dir) in DIRS.iter().enumerate() {
+        f[i] = sense(&game.map, game.ghosts(), px, py, dir);
     }
+    f
+}
 
-    // 2) Fantasmas sobrescrevem o tile na visão local
-    for g in game.ghosts() {
-        let gx = g.pos.x.floor() as i32;
-        let gy = g.pos.y.floor() as i32;
-        let lx = gx - (cx - HALF);
-        let ly = gy - (cy - HALF);
-        if (0..VISION as i32).contains(&lx) && (0..VISION as i32).contains(&ly) {
-            f[(ly * VISION as i32 + lx) as usize] = -1.0;
-        }
-    }
-
-    // 3) Direção atual (one-hot)
-    let d = match game.player.dir {
-        Direction::Up    => 0,
-        Direction::Down  => 1,
-        Direction::Left  => 2,
-        Direction::Right => 3,
+/// Raycast a partir de `(px, py)` na direção `dir`.
+#[inline]
+fn sense(map: &Map, ghosts: &[Ghost], px: usize, py: usize, dir: Direction) -> f32 {
+    let (dx, dy) = match dir {
+        Direction::Up    => (0, -1),
+        Direction::Down  => (0,  1),
+        Direction::Left  => (-1, 0),
+        Direction::Right => ( 1, 0),
     };
-    f[idx + d] = 1.0;
-    idx += 4;
+    let w = GRID_WIDTH  as i32;
+    let h = GRID_HEIGHT as i32;
+    let mut x = px as i32 + dx;
+    let mut y = py as i32 + dy;
 
-    // 4) Direção do fantasma mais próximo (normalizada para ~[-1,1])
-    let inv_w = 1.0 / GRID_WIDTH  as f32;
-    let inv_h = 1.0 / GRID_HEIGHT as f32;
-    let mut best_gd2 = i32::MAX;
-    let mut gvec = (0.0f32, 0.0f32);
-    for g in game.ghosts() {
-        let gx = g.pos.x.floor() as i32;
-        let gy = g.pos.y.floor() as i32;
-        let dx = gx - cx;
-        let dy = gy - cy;
-        let d2 = dx * dx + dy * dy;
-        if d2 < best_gd2 {
-            best_gd2 = d2;
-            gvec = (dx as f32 * inv_w, dy as f32 * inv_h);
-        }
+    // Caso especial: Pac-Man em cima de um tile de túnel na borda,
+    // olhando para fora → wrap-around → túnel.
+    if (x < 0 || x >= w) && y == TUNNEL_ROW as i32 {
+        return ENC_TUNNEL;
     }
-    f[idx]     = gvec.0;
-    f[idx + 1] = gvec.1;
-    idx += 2;
 
-    // 5) Pellet mais próximo (varredura linear — 1023 iterações, trivial)
-    let mut best_pd2 = i32::MAX;
-    let mut pvec = (0.0f32, 0.0f32);
-    let tiles = game.map.tiles();
-    for y in 0..GRID_HEIGHT {
-        for x in 0..GRID_WIDTH {
-            if tiles[y * GRID_WIDTH + x] == Tile::Pellet {
-                let dx = x as i32 - cx;
-                let dy = y as i32 - cy;
-                let d2 = dx * dx + dy * dy;
-                if d2 < best_pd2 {
-                    best_pd2 = d2;
-                    pvec = (dx as f32 * inv_w, dy as f32 * inv_h);
+    let mut first_event = ENC_NOTHING;
+
+    // A visão só é bloqueada por paredes. O loop continua varrendo a linha 
+    // para garantir que um fantasma seja detectado mesmo que haja pellets no caminho.
+    while x >= 0 && y >= 0 && x < w && y < h {
+        // 1. Fantasma tem prioridade absoluta (sobrevivência em primeiro lugar).
+        // Ele "atravessa" pellets na visão do sensor.
+        for g in ghosts {
+            let (gx, gy) = g.tile();
+            if gx as i32 == x && gy as i32 == y {
+                return ENC_GHOST;
+            }
+        }
+
+        let tile = map.tile_at(x as usize, y as usize);
+        match tile {
+            Tile::Wall => {
+                // A parede bloqueia o sensor. 
+                // Retorna a parede se estava de cara com ela, 
+                // ou o primeiro evento (pellet/túnel) que foi visto antes dela.
+                return if first_event == ENC_NOTHING { ENC_WALL } else { first_event };
+            }
+            Tile::Pellet => {
+                // Registra o primeiro pellet visto, mas não interrompe a busca por fantasmas.
+                if first_event == ENC_NOTHING {
+                    first_event = ENC_PELLET;
                 }
             }
+            Tile::Tunnel => {
+                // Registra o primeiro túnel visto.
+                if first_event == ENC_NOTHING {
+                    first_event = ENC_TUNNEL;
+                }
+            }
+            Tile::Empty => {
+                // Continua varrendo
+            }
         }
-    }
-    f[idx]     = pvec.0;
-    f[idx + 1] = pvec.1;
 
-    f
+        x += dx;
+        y += dy;
+    }
+
+    // Se chegou na borda do mapa sem encontrar parede nem fantasma, 
+    // retorna o que tiver visto primeiro (ou ENC_NOTHING se estiver vazio).
+    first_event
 }
 
 // ---------------------------------------------------------------------------

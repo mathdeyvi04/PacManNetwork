@@ -45,7 +45,7 @@ pub const COLOR_OVERLAY:      Color = Color::new(0.0, 0.0, 0.0, 0.75);
 // ---------------------------------------------------------------------------
 // Painel de visualização da rede neural (abaixo do mapa)
 // ---------------------------------------------------------------------------
-pub const NEURAL_PANEL_HEIGHT: f32 = 260.0;
+pub const NEURAL_PANEL_HEIGHT: f32 = 180.0;
 pub const WINDOW_HEIGHT_TOTAL: i32 = WINDOW_HEIGHT + NEURAL_PANEL_HEIGHT as i32;
 
 // Cores base (usadas como fallback / identidade)
