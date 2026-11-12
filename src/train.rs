@@ -1,45 +1,32 @@
-//! Treinamento da rede neural via algoritmos genéticos.
-//! Executado de forma "headless" (sem janela gráfica).
-//!
-//! Separação de responsabilidades:
-//! 1. Configuração (Constantes)
-//! 2. Entidade (Agent)
-//! 3. Inicialização (init_population)
-//! 4. Simulação (simulate_generation)
-//! 5. Evolução (Próximos passos: select, crossover, mutate)
-//! 6. Loop Principal (main)
-
-#[path = "constants.rs"] mod constants;
-#[path = "controller.rs"] mod controller;
-#[path = "game.rs"] mod game;
-#[path = "ghost.rs"] mod ghost;
-#[path = "map.rs"] mod map;
-#[path = "player.rs"] mod player;
-#[path = "neural.rs"] mod neural;
+mod constants;
+mod core;
+mod ai;
+mod utils;
 
 use constants::*;
-use game::{Game, GameState};
-use neural::NeuralController;
-use controller::Controller;
+use core::game::{Game, GameState};
+use core::map::Map;
+use core::controller::Controller;
+use ai::neural::NeuralController;
+use utils::logger::GenerationStats;
 
-use std::io::{self, Write};
+use rayon::prelude::*;
+
+// ... (resto do código train.rs continua igual, sem os #[path])
 
 // ---------------------------------------------------------------------------
 // 1. Configuração do Treinamento
 // ---------------------------------------------------------------------------
 
-// --- Parâmetros da Simulação ---
 const POPULATION_SIZE: usize = 100;
-const MAX_STEPS: usize = 3000;     // ~50 segundos de jogo por geração
-const DT: f32 = 1.0 / 60.0;        // Passo fixo de simulação (60 FPS)
+const MAX_STEPS: usize = 3000;     
+const DT: f32 = 1.0 / 60.0;        
 
-// --- Parâmetros do Algoritmo Genético ---
-const N_GENERATIONS: usize = 50;   // Quantas gerações vamos treinar
-const ELITE_SIZE: usize = 5;       // Quantos melhores passam intactos para a próxima geração
-const MUTATION_RATE: f32 = 0.10;   // Probabilidade de cada peso sofrer mutação
-const MUTATION_STRENGTH: f32 = 0.2;// Magnitude máxima da alteração no peso (gaussiana/uniforme)
+const N_GENERATIONS: usize = 50;   
+const ELITE_SIZE: usize = 5;       
+const MUTATION_RATE: f32 = 0.10;   
+const MUTATION_STRENGTH: f32 = 0.2;
 
-// --- Recompensas (Fitness) ---
 const FITNESS_DEATH_PENALTY: f32 = -500.0;
 const FITNESS_WIN_BONUS: f32 = 2000.0;
 const FITNESS_SURVIVAL_MULT: f32 = 0.05;
@@ -57,10 +44,9 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Cria um agente com um jogo novo e uma rede neural aleatória.
-    fn new_random() -> Self {
+    fn new_random(base_map: &Map) -> Self {
         Self {
-            game: Game::new(),
+            game: Game::with_map(base_map.clone()),
             controller: NeuralController::random(),
             steps: 0,
             fitness: 0.0,
@@ -68,18 +54,6 @@ impl Agent {
         }
     }
 
-    /// Cria um agente herdando uma rede neural específica (usado para elites/filhos).
-    fn from_controller(controller: NeuralController) -> Self {
-        Self {
-            game: Game::new(),
-            controller,
-            steps: 0,
-            fitness: 0.0,
-            finished: false,
-        }
-    }
-
-    /// Avança um frame da simulação deste agente.
     fn step(&mut self) {
         if self.finished { return; }
 
@@ -93,7 +67,6 @@ impl Agent {
         }
     }
 
-    /// Calcula o Fitness com base no resultado da simulação.
     fn evaluate(&mut self) {
         self.fitness = self.game.score as f32 + (self.steps as f32 * FITNESS_SURVIVAL_MULT);
 
@@ -106,112 +79,71 @@ impl Agent {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Inicialização
+// 3. Inicialização e Simulação
 // ---------------------------------------------------------------------------
 
-/// Cria a população inicial de agentes com redes neurais aleatórias.
-fn init_population(size: usize) -> Vec<Agent> {
-    (0..size).map(|_| Agent::new_random()).collect()
+fn init_population(size: usize, base_map: &Map) -> Vec<Agent> {
+    (0..size).map(|_| Agent::new_random(base_map)).collect()
 }
 
-// ---------------------------------------------------------------------------
-// 4. Simulação
-// ---------------------------------------------------------------------------
-
-/// Executa a simulação de todos os agentes até que todos terminem.
-fn simulate_generation(population: &mut [Agent], generation: usize) {
-    let mut active_agents = population.len();
-    let mut frame = 0;
-
-    while active_agents > 0 {
-        for agent in population.iter_mut() {
-            if !agent.finished {
-                agent.step();
-                if agent.finished {
-                    active_agents -= 1;
-                }
-            }
+fn simulate_generation(population: &mut [Agent]) {
+    population.par_iter_mut().for_each(|agent| {
+        while !agent.finished {
+            agent.step();
         }
-        
-        frame += 1;
-        if frame % 60 == 0 {
-            print!("\r  Geração {:02} | Frame {:04}/{} | Agentes ativos: {:03}   ", 
-                   generation, frame, MAX_STEPS, active_agents);
-            let _ = io::stdout().flush();
-        }
-    }
-    println!(); // Pula linha após terminar a geração
+    });
 }
 
-/// Ordena a população do maior fitness para o menor.
 fn sort_by_fitness(population: &mut [Agent]) {
     population.sort_by(|a, b| b.fitness.partial_cmp(&a.fitness).unwrap_or(std::cmp::Ordering::Equal));
 }
 
 // ---------------------------------------------------------------------------
-// 5. Algoritmo Genético (Stubs para os próximos passos)
-// ---------------------------------------------------------------------------
-
-/*
-fn select_parents(population: &[Agent]) -> Vec<&NeuralController> {
-    // TODO: Torneio ou Roleta
-}
-
-fn crossover(parent1: &NeuralController, parent2: &NeuralController) -> NeuralController {
-    // TODO: Troca de pesos (Uniform Crossover)
-}
-
-fn mutate(net: &mut NeuralController) {
-    // TODO: Alterar pesos aleatoriamente baseado em MUTATION_RATE e MUTATION_STRENGTH
-}
-*/
-
-// ---------------------------------------------------------------------------
-// 6. Loop Principal
+// 4. Loop Principal
 // ---------------------------------------------------------------------------
 
 fn main() {
     println!("=== Iniciando Treinamento Evolutivo ===");
-    println!("Gerações: {} | População: {} | Limite de Frames: {}", N_GENERATIONS, POPULATION_SIZE, MAX_STEPS);
+    println!("Gerações: {:3} | População: {:3} | Limite: {:4} frames\n", 
+             N_GENERATIONS, POPULATION_SIZE, MAX_STEPS);
 
-    // Cria a população inicial (Geração 0)
-    let mut population = init_population(POPULATION_SIZE);
+    // Chama o cabeçalho do módulo de logs
+    GenerationStats::print_header();
 
-    // Loop de Gerações
+    let mut base_map = Map::generate();
+    let mut population = init_population(POPULATION_SIZE, &base_map);
+
     for generation in 1..=N_GENERATIONS {
-        // 1. Simular todos os agentes
-        simulate_generation(&mut population, generation);
+        // 1. Simular
+        simulate_generation(&mut population);
 
-        // 2. Ordenar por Fitness
+        // 2. Ordenar e Coletar Métricas
         sort_by_fitness(&mut population);
 
-        // 3. Exibir Resultados
         let best = &population[0];
         let avg_fitness: f32 = population.iter().map(|a| a.fitness).sum::<f32>() / POPULATION_SIZE as f32;
         
-        println!("=== Resumo da Geração {:02} ===", generation);
-        println!("  Melhor Fitness: {:.2} (Score: {})", best.fitness, best.game.score);
-        println!("  Fitness Médio:  {:.2}", avg_fitness);
+        // 3. Instanciar e Exibir Log via Módulo Dedicado
+        let stats = GenerationStats {
+            generation,
+            best_fitness: best.fitness,
+            avg_fitness,
+            best_score: best.game.score,
+        };
+        stats.print_row();
         
-        // Salva o melhor da geração atual (opcional, útil para inspecionar)
+        // Salva a melhor rede esporadicamente
         if generation == N_GENERATIONS || generation % 10 == 0 {
             let path = format!("best_gen_{:03}.bin", generation);
             let _ = best.controller.net().save(&path);
-            println!("  Melhor rede salva em: {}", path);
         }
 
-        // 4. Evolução (Se não for a última geração)
+        // 4. Evolução (Placeholder)
         if generation < N_GENERATIONS {
-            // TODO: Implementar o ciclo evolutivo
-            // let new_population = evolve_population(&population);
-            // population = new_population;
-            
-            // Por enquanto, recriamos a população aleatoriamente para não travar o loop
-            // quando as funções de crossover/mutação forem implementadas.
-            population = init_population(POPULATION_SIZE);
+            base_map = Map::generate(); 
+            population = init_population(POPULATION_SIZE, &base_map);
         }
-        println!();
     }
 
-    println!("Treinamento concluído!");
+    println!("\nTreinamento concluído!");
 }

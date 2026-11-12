@@ -1,10 +1,10 @@
 use macroquad::prelude::*;
 
 use crate::constants::*;
-use crate::game::{Game, GameState};
-use crate::ghost::{Ghost, GhostKind, GhostMode};
-use crate::map::{Map, Tile};
-use crate::player::{Direction, Player};
+use crate::core::game::{Game, GameState};
+use crate::core::ghost::{Ghost, GhostKind, GhostMode};
+use crate::core::map::{Map, Tile};
+use crate::core::player::{Direction, Player};
 
 pub struct Renderer;
 

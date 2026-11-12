@@ -1,6 +1,6 @@
 use macroquad::prelude::*;
-use crate::game::Game;
-use crate::player::Direction;
+use super::game::Game;
+use super::player::Direction;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Action {

@@ -8,11 +8,11 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 
 use crate::constants::*;
-use crate::controller::{Action, Controller};
-use crate::game::Game;
-use crate::ghost::Ghost;               // NOVO
-use crate::map::{Map, Tile};           // Map NOVO
-use crate::player::Direction;
+use crate::core::controller::{Action, Controller};
+use crate::core::game::Game;
+use crate::core::ghost::Ghost;
+use crate::core::map::{Map, Tile};
+use crate::core::player::Direction;
 
 // ---------------------------------------------------------------------------
 // Arquitetura — 4 sensores direcionais → 16 ocultos → 4 saídas

@@ -1,8 +1,8 @@
 use macroquad::prelude::*;
 use macroquad::rand::gen_range;
 use crate::constants::*;
-use crate::map::Map;
-use crate::player::{Direction, clamp_against_wall};
+use super::map::Map;
+use super::player::{Direction, clamp_against_wall};
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq)]

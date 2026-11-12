@@ -1,21 +1,17 @@
 mod constants;
-mod controller;
-mod game;
-mod ghost;
-mod map;
-mod neural;
-mod player;
-mod renderer;
-mod neural_viz;
-
-use constants::*;
-use controller::{Action, Controller, KeyboardController};
-use game::Game;
-use neural::NeuralController;
-use renderer::Renderer;
-use neural_viz::NeuralViz;
+mod core;
+mod ai;
+mod ui;
 
 use macroquad::prelude::*;
+
+use constants::*;
+use core::controller::{Action, Controller, KeyboardController};
+use core::game::Game;
+use ai::neural::NeuralNet;
+use ai::neural::NeuralController;
+use ui::renderer::Renderer;
+use ui::neural_viz::NeuralViz;
 
 
 fn is_neural_mode() -> bool {
@@ -63,7 +59,7 @@ fn parse_cli() -> Mode {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(1);
-            let net = neural::NeuralNet::random(seed);
+            let net = NeuralNet::random(seed);
             match net.save(path) {
                 Ok(()) => {
                     println!("Pesos salvos em: {}", path);

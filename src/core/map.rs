@@ -13,6 +13,7 @@ pub enum Tile {
 }
 
 /// Labirinto em grid de tiles.
+#[derive(Clone)]
 pub struct Map {
     /// Grid achatado: `tiles[y * GRID_WIDTH + x]`.
     tiles: Vec<Tile>,

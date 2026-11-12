@@ -1,8 +1,8 @@
+use super::ghost::{Ghost, GhostKind, GhostMode};
+use super::map::Map;
+use super::player::{Direction, Player};
+use super::controller::Action;
 use crate::constants::*;
-use crate::ghost::{Ghost, GhostKind, GhostMode};
-use crate::map::Map;
-use crate::player::{Direction, Player};
-use crate::controller::Action;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GameState { Playing, GameOver, Win }
@@ -19,30 +19,35 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn new() -> Self {
-        let map = Map::generate();
-        let (sx, sy) = find_spawn(&map);
-        let dir = initial_direction(&map, sx, sy);
-        let player = Player::new(sx, sy, dir);
-
-        let spawns = find_ghost_spawns(&map);
-        let kinds = [GhostKind::Blinky, GhostKind::Pinky, GhostKind::Inky, GhostKind::Clyde];
-        let ghosts = [
-            Ghost::new(spawns[0].0, spawns[0].1, kinds[0]),
-            Ghost::new(spawns[1].0, spawns[1].1, kinds[1]),
-            Ghost::new(spawns[2].0, spawns[2].1, kinds[2]),
-            Ghost::new(spawns[3].0, spawns[3].1, kinds[3]),
-        ];
-
-        Self {
-            map, player, score: 0,
-            score_text: String::from("Score: 0"),
-            ghosts,
-            state: GameState::Playing,
-            mode: GhostMode::Scatter,
-            mode_timer: SCATTER_DURATION,
+    // O `new()` original agora apenas chama o `with_map`
+        pub fn new() -> Self {
+            Self::with_map(Map::generate())
         }
-    }
+    
+        // NOVO: Construtor que recebe um mapa pré-gerado
+        pub fn with_map(map: Map) -> Self {
+            let (sx, sy) = find_spawn(&map);
+            let dir = initial_direction(&map, sx, sy);
+            let player = Player::new(sx, sy, dir);
+    
+            let spawns = find_ghost_spawns(&map);
+            let kinds = [GhostKind::Blinky, GhostKind::Pinky, GhostKind::Inky, GhostKind::Clyde];
+            let ghosts = [
+                Ghost::new(spawns[0].0, spawns[0].1, kinds[0]),
+                Ghost::new(spawns[1].0, spawns[1].1, kinds[1]),
+                Ghost::new(spawns[2].0, spawns[2].1, kinds[2]),
+                Ghost::new(spawns[3].0, spawns[3].1, kinds[3]),
+            ];
+    
+            Self {
+                map, player, score: 0,
+                score_text: String::from("Score: 0"),
+                ghosts,
+                state: GameState::Playing,
+                mode: GhostMode::Scatter,
+                mode_timer: SCATTER_DURATION,
+            }
+        }
 
     #[inline(always)] pub fn state(&self)      -> GameState   { self.state }
     #[inline(always)] pub fn mode(&self)       -> GhostMode   { self.mode }

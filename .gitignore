@@ -21,3 +21,4 @@ target/
 /target
 
 read_all_files.txt
+*.bin

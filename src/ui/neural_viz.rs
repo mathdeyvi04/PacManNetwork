@@ -6,7 +6,7 @@
 use macroquad::prelude::*;
 
 use crate::constants::{NEURAL_PANEL_HEIGHT, WINDOW_WIDTH};
-use crate::neural::{NeuralController, HIDDEN_SIZE, OUTPUT_SIZE};
+use crate::ai::neural::{NeuralController, HIDDEN_SIZE, OUTPUT_SIZE};
 
 // ---------------------------------------------------------------------------
 // Constantes de Layout

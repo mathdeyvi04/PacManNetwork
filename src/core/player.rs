@@ -1,6 +1,6 @@
 use macroquad::prelude::*;
 use crate::constants::*;
-use crate::map::Map;
+use super::map::Map;
 
 /// Uma das quatro direções cardeais.
 #[derive(Clone, Copy, PartialEq, Eq)]
