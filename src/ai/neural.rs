@@ -32,6 +32,7 @@ const ENC_NOTHING: f32 =  0.0;         // neutro
 const ENC_TUNNEL:  f32 =  0.5;         // fuga segura
 const ENC_PELLET:  f32 =  1.0;         // recompensa
 
+#[derive(Clone)]
 pub struct NeuralNet {
     // w1[j][i]  → j em [0,HIDDEN), i em [0,INPUT)
     w1: [f32; HIDDEN_SIZE * INPUT_SIZE],
@@ -57,6 +58,25 @@ impl NeuralNet {
         for w in net.w2.iter_mut() { *w = rng.range(-s2, s2); }
         // b1, b2 ficam 0.
         net
+    }
+
+    /// Aplica **mutação uniforme gene a gene**.
+    ///
+    /// Cada parâmetro (w1, b1, w2, b2, iterados em sequência) tem
+    /// `rate` de probabilidade de receber uma perturbação uniforme em
+    /// `[-strength, +strength)`. O `seed` inicializa o `Rng` interno —
+    /// chamadas com seeds distintas geram streams independentes.
+    pub fn mutate(&mut self, rate: f32, strength: f32, seed: u64) {
+        let mut rng = Rng::new(seed);
+        for w in self.w1.iter_mut()
+            .chain(self.b1.iter_mut())
+            .chain(self.w2.iter_mut())
+            .chain(self.b2.iter_mut())
+        {
+            if rng.unit() < rate {
+                *w += rng.range(-strength, strength);
+            }
+        }
     }
 
     #[inline]

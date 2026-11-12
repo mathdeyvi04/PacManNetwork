@@ -5,17 +5,15 @@ mod utils;
 
 use core::map::Map;
 use ai::genetic::*;
+use ai::neural::NeuralNet;
 use utils::logger::GenerationStats;
 
 use rayon::prelude::*;
 use std::time::Instant;
 
 // ---------------------------------------------------------------------------
-// 1. Simulação
+// Simulação
 // ---------------------------------------------------------------------------
-//
-// Apenas orquestra `Agent::step()` em loop até o agente encerrar.
-// Toda a lógica do indivíduo (fitness, reset, etc.) vive em `ai::genetic`.
 
 fn simulate_generation_parallel(population: &mut [Agent]) {
     population.par_iter_mut().for_each(|agent| {
@@ -34,16 +32,30 @@ fn simulate_generation_single(population: &mut [Agent]) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Loop Principal
+// Recorde global
+// ---------------------------------------------------------------------------
+
+/// Snapshot do melhor indivíduo visto em **toda** a evolução.
+///
+/// Existe porque o elite `top-K` pode perder o campeão de uma geração
+/// anterior — seja por competição com mutações posteriores, seja por
+/// variação de fitness causada pelo RNG global dos fantasmas (rayon
+/// intercala `gen_range` de forma não-determinística entre threads).
+struct BestEver {
+    fitness: f32,
+    generation: usize,
+    score: u32,
+    net: NeuralNet,
+}
+
+// ---------------------------------------------------------------------------
+// Loop principal
 // ---------------------------------------------------------------------------
 
 fn main() {
-    // Lê os argumentos da linha de comando
     let args: Vec<String> = std::env::args().collect();
     let use_single_thread = args.iter().any(|arg| arg == "--single" || arg == "-s");
 
-    // `--map <path>` carrega um mapa pré-existente; caso contrário, gera um
-    // novo e salva em `map.bin` para reuso futuro.
     let map_path = args.iter()
         .position(|a| a == "--map")
         .and_then(|i| args.get(i + 1).cloned());
@@ -88,64 +100,76 @@ fn main() {
 
     GenerationStats::print_header();
 
-    // Marca o início do treinamento total
     let total_start = Instant::now();
 
     let mut population = init_population(POPULATION_SIZE, &base_map);
+    let mut best_ever: Option<BestEver> = None;
 
     for generation in 1..=N_GENERATIONS {
-        // Marca o início da geração
         let gen_start = Instant::now();
 
-        // 1. Simular (escolhe o método baseado no argumento)
         if use_single_thread {
             simulate_generation_single(&mut population);
         } else {
             simulate_generation_parallel(&mut population);
         }
 
-        // Tempo apenas desta geração
         let gen_elapsed_secs = gen_start.elapsed().as_secs_f32();
 
-        // 2. Ordenar por fitness e coletar métricas
-        sort_by_fitness(&mut population);
+        // Ordenação PARCIAL: só precisamos dos top-ELITE_SIZE em ordem.
+        // Os demais em `population[ELITE_SIZE..]` ficam em ordem qualquer —
+        // serão sobrescritos por `evolve_population`.
+        select_top_k_by_fitness(&mut population, ELITE_SIZE);
 
         let best = &population[0];
         let avg_fitness: f32 = population.iter().map(|a| a.fitness).sum::<f32>()
             / POPULATION_SIZE as f32;
 
-        // 3. Log via módulo dedicado
+        // Atualiza o recorde global se o campeão desta geração o superou.
+        if best_ever.as_ref().map_or(true, |b| best.fitness > b.fitness) {
+            best_ever = Some(BestEver {
+                fitness: best.fitness,
+                generation,
+                score: best.game.score,
+                net: best.controller.net().clone(),
+            });
+        }
+        let record = best_ever.as_ref().unwrap();
+
         let stats = GenerationStats {
             generation,
             best_fitness: best.fitness,
             avg_fitness,
             best_score: best.game.score,
+            best_ever_fitness: record.fitness,
+            best_ever_generation: record.generation,
+            best_ever_score: record.score,
             time_secs: gen_elapsed_secs,
         };
         stats.print_row();
 
-        // Salva a melhor rede esporadicamente
-        if generation == N_GENERATIONS || generation % 10 == 0 {
-            let path = format!("best_gen_{:03}.bin", generation);
-            let _ = best.controller.net().save(&path);
-        }
-
-        // 4. Evolução da próxima geração (delegado ao módulo AG)
-        //
-        // O mapa é FIXO: `base_map` nunca é regenerado. Todos os elite,
-        // filhos e mutações serão avaliados no mesmo ambiente, o que:
-        //   • torna `best_fitness` comparável entre gerações;
-        //   • permite que o elitismo de fato preserve "quem aprendeu este mapa";
-        //   • dá sentido a continuar um treinamento pausado (`--map map.bin`).
         if generation < N_GENERATIONS {
             evolve_population(&mut population, &base_map);
         }
     }
 
-    // Tempo total de treinamento
     let total_elapsed_secs = total_start.elapsed().as_secs_f32();
 
-    println!("----------------------------------------------------------------------");
+    // ---------------------------------------------------------------------
+    // Salvamento ÚNICO da melhor rede de todo o treinamento
+    // ---------------------------------------------------------------------
+    let record = best_ever.expect("população vazia — impossível com N_GENERATIONS >= 1");
+    let filename = format!("best_gen_{:03}.bin", record.generation);
+
+    println!("\n----------------------------------------------------------------------");
     println!("Treinamento concluído em {:.2} segundos!", total_elapsed_secs);
-    println!("Mapa usado neste treinamento: 'map.bin' (reutilize com --map map.bin).");
+    println!(
+        "Melhor rede: geração {:02} | fitness {:+.2} | score {}",
+        record.generation, record.fitness, record.score
+    );
+
+    match record.net.save(&filename) {
+        Ok(()) => println!("Salva em '{}' (use com `nn {} map.bin`)", filename, filename),
+        Err(e) => eprintln!("Erro ao salvar '{}': {}", filename, e),
+    }
 }
