@@ -16,7 +16,9 @@ pub enum Tile {
 #[derive(Clone)]
 pub struct Map {
     /// Grid achatado: `tiles[y * GRID_WIDTH + x]`.
-    tiles: Vec<Tile>,
+    /// `Box<[Tile]>` — tamanho exato, sem `capacity` sobrando;
+    /// `clone()` aloca exatamente `len * size_of::<Tile>()` bytes.
+    tiles: Box<[Tile]>,
     /// Pontos Restando
     pellets_remaining: usize,
 }
@@ -37,7 +39,9 @@ impl Map {
             .unwrap_or(0);
         srand(seed);
 
-        let mut tiles = vec![Tile::Wall; GRID_WIDTH * GRID_HEIGHT];
+        // Box<[Tile]> — sem overhead de capacidade.
+        let mut tiles: Box<[Tile]> =
+            vec![Tile::Wall; GRID_WIDTH * GRID_HEIGHT].into_boxed_slice();
 
         // Recursive Backtracker sobre as células ímpares do grid.
         let max_cells = ((GRID_WIDTH - 1) / 2) * ((GRID_HEIGHT - 1) / 2);
