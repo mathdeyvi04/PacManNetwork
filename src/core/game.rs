@@ -1,7 +1,9 @@
+use std::time::{SystemTime, UNIX_EPOCH};
 use super::ghost::{Ghost, GhostKind, GhostMode};
 use super::map::Map;
 use super::player::{Direction, Player};
 use super::controller::Action;
+use super::rng::Rng;  
 use crate::constants::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -16,6 +18,7 @@ pub struct Game {
     state: GameState,
     mode: GhostMode,
     mode_timer: f32,
+    rng: Rng,
 }
 
 impl Game {
@@ -23,13 +26,23 @@ impl Game {
     pub fn new() -> Self {
         Self::with_map(Map::generate())
     }
-
-    // NOVO: Construtor que recebe um mapa pré-gerado
+    
+    /// Construtor para contextos casuais (modo humano, demo). Seed **aleatória**.
     pub fn with_map(map: Map) -> Self {
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x9E37_79B9_7F4A_7C15);
+        Self::with_map_and_seed(map, seed)
+    }
+    
+    /// Construtor para treinamento — seed **explícita** para reprodutibilidade.
+    /// Mesma rede + mesma seed + mesmo mapa ⇒ mesma trajetória.
+    pub fn with_map_and_seed(map: Map, seed: u64) -> Self {
         let (sx, sy) = find_spawn(&map);
         let dir = initial_direction(&map, sx, sy);
         let player = Player::new(sx, sy, dir);
-
+    
         let spawns = find_ghost_spawns(&map);
         let kinds = [GhostKind::Blinky, GhostKind::Pinky, GhostKind::Inky, GhostKind::Clyde];
         let ghosts = [
@@ -38,14 +51,13 @@ impl Game {
             Ghost::new(spawns[2].0, spawns[2].1, kinds[2]),
             Ghost::new(spawns[3].0, spawns[3].1, kinds[3]),
         ];
-
+    
         Self {
-            map, player, score: 0,
-            // REMOVIDO: score_text: String::from("Score: 0"),
-            ghosts,
+            map, player, score: 0, ghosts,
             state: GameState::Playing,
             mode: GhostMode::Scatter,
             mode_timer: SCATTER_DURATION,
+            rng: Rng::new(seed),
         }
     }
 
@@ -108,7 +120,7 @@ impl Game {
         let mode        = self.mode;
         let map_ref     = &self.map;
         for g in &mut self.ghosts {
-            g.update(map_ref, player_tile, player_dir, blinky_tile, mode, dt);
+            g.update(map_ref, player_tile, player_dir, blinky_tile, mode, dt, &mut self.rng);
         }
 
         // --- Colisão Pac-Man × fantasma (distância², sem sqrt) ---

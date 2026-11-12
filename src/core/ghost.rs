@@ -1,5 +1,5 @@
 use macroquad::prelude::*;
-use macroquad::rand::gen_range;
+use crate::core::rng::Rng;
 use crate::constants::*;
 use super::map::Map;
 use super::player::{Direction, clamp_against_wall};
@@ -75,11 +75,11 @@ impl Ghost {
     }
 
     /// Decide a nova direção num centro de tile, com detecção de loop.
-    fn decide(&mut self, tile: (i16, i16), target: (i32, i32), map: &Map) -> Direction {
+    fn decide(&mut self, tile: (i16, i16), target: (i32, i32), map: &Map, rng: &mut Rng) -> Direction {
         // 1) Detour em curso: passo aleatório (exceto reverso).
         if self.detour > 0 {
             self.detour -= 1;
-            let d = random_non_reverse(self.dir, tile, map);
+            let d = random_non_reverse(self.dir, tile, map, rng);
             self.record(tile, d);
             return d;
         }
@@ -106,6 +106,7 @@ impl Ghost {
         blinky_tile: (usize, usize),
         mode: GhostMode,
         dt: f32,
+        rng: &mut Rng, 
     ) {
         let center_x = tile_center(self.pos.x);
         let center_y = tile_center(self.pos.y);
@@ -187,7 +188,7 @@ impl Ghost {
             self.pos = vec2(cx, cy);
             let tile_i16 = (cx.floor() as i16, cy.floor() as i16);
             let target = self.compute_target(player_tile, player_dir, blinky_tile, mode);
-            self.dir = self.decide(tile_i16, target, map);
+            self.dir = self.decide(tile_i16, target, map, rng); 
         }
     }
 
@@ -246,7 +247,7 @@ fn tile_center(v: f32) -> f32 {
 }
 
 /// Escolhe uma direção não-reversa uniformemente ao acaso.
-fn random_non_reverse(current: Direction, tile: (i16, i16), map: &Map) -> Direction {
+fn random_non_reverse(current: Direction, tile: (i16, i16), map: &Map, rng: &mut Rng) -> Direction {
     let reverse = current.opposite();
     let mut options = [Direction::Up; 3];
     let mut n = 0usize;
@@ -267,7 +268,7 @@ fn random_non_reverse(current: Direction, tile: (i16, i16), map: &Map) -> Direct
         options[n] = d;
         n += 1;
     }
-    if n == 0 { reverse } else { options[gen_range(0, n)] }
+    if n == 0 { reverse } else { options[rng.range_usize(n)] }
 }
 
 /// Greedy clássico: minimiza d² ao alvo sem reverter.

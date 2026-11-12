@@ -13,6 +13,7 @@ use crate::core::game::Game;
 use crate::core::ghost::Ghost;
 use crate::core::map::{Map, Tile};
 use crate::core::player::Direction;
+use crate::core::rng::Rng;
 
 // ---------------------------------------------------------------------------
 // Arquitetura — 4 sensores direcionais → 16 ocultos → 4 saídas
@@ -77,6 +78,37 @@ impl NeuralNet {
                 *w += rng.range(-strength, strength);
             }
         }
+    }
+
+    /// Crossover **uniforme gene a gene**: cada parâmetro é escolhido
+    /// aleatoriamente de `self` ou de `other` com probabilidade 50%.
+    ///
+    /// Preferido a single-point porque a topologia é fixa (4→16→4) e
+    /// recombinação "por camada" quebraria blocos funcionais inteiros.
+    /// Uniforme preserva blocos locais e permite que dois pais contribuam
+    /// com partes distintas (ex.: "aprendeu a desviar" + "aprendeu a comer").
+    pub fn crossover(&self, other: &Self, rng: &mut Rng) -> Self {
+        let mut child = Self {
+            w1: [0.0; HIDDEN_SIZE * INPUT_SIZE],
+            b1: [0.0; HIDDEN_SIZE],
+            w2: [0.0; OUTPUT_SIZE * HIDDEN_SIZE],
+            b2: [0.0; OUTPUT_SIZE],
+        };
+    
+        for i in 0..HIDDEN_SIZE * INPUT_SIZE {
+            child.w1[i] = if rng.unit() < 0.5 { self.w1[i] } else { other.w1[i] };
+        }
+        for i in 0..HIDDEN_SIZE {
+            child.b1[i] = if rng.unit() < 0.5 { self.b1[i] } else { other.b1[i] };
+        }
+        for i in 0..OUTPUT_SIZE * HIDDEN_SIZE {
+            child.w2[i] = if rng.unit() < 0.5 { self.w2[i] } else { other.w2[i] };
+        }
+        for i in 0..OUTPUT_SIZE {
+            child.b2[i] = if rng.unit() < 0.5 { self.b2[i] } else { other.b2[i] };
+        }
+    
+        child
     }
 
     #[inline]
@@ -366,31 +398,5 @@ impl Controller for NeuralController {
         }
 
         Action::Move(dir)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// RNG determinístico (xorshift64)
-// ---------------------------------------------------------------------------
-
-struct Rng { state: u64 }
-
-impl Rng {
-    fn new(seed: u64) -> Self {
-        Self { state: if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed } }
-    }
-    #[inline] fn next(&mut self) -> u64 {
-        let mut x = self.state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.state = x;
-        x
-    }
-    #[inline] fn unit(&mut self) -> f32 {
-        ((self.next() >> 40) as f32) / ((1u64 << 24) as f32)
-    }
-    #[inline] fn range(&mut self, low: f32, high: f32) -> f32 {
-        low + (high - low) * self.unit()
     }
 }

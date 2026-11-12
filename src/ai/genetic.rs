@@ -11,60 +11,73 @@ use crate::core::game::{Game, GameState};
 use crate::core::map::Map;
 use crate::core::controller::Controller;
 use crate::ai::neural::NeuralController;
+use crate::ai::neural::NeuralNet;
+use crate::core::rng::Rng;
 
 // ---------------------------------------------------------------------------
 // Tamanho da População e Simulação
 // ---------------------------------------------------------------------------
 
-/// Número de agentes por geração.
 pub const POPULATION_SIZE: usize = 100;
 
-/// Limite máximo de frames (`steps`) que um agente pode simular.
-pub const MAX_STEPS: usize = 3000;
+/// Limite máximo de frames. Aumentado de 3000→8000 para dar espaço
+/// a agentes que consigam sobreviver bem explorando (não apenas aos
+/// que morrem cedo); partidas curtas continuam curtas.
+pub const MAX_STEPS: usize = 8000;
 
-/// Passo de tempo fixo por frame (`1/60 s`).
 pub const DT: f32 = 1.0 / 60.0;
 
 // ---------------------------------------------------------------------------
-// Parâmetros do Algoritmo Genético
+// Parâmetros do Algoritmo Genético (sexuado + torneio + elitismo)
 // ---------------------------------------------------------------------------
 
-/// Número total de gerações a evoluir.
-pub const N_GENERATIONS: usize = 50;
+/// Gerações. Aumentado de 50→200: com o bug de congelamento corrigido,
+/// a curva tende a subir de forma consistente e precisa de orçamento
+/// para mostrar todo o progresso possível.
+pub const N_GENERATIONS: usize = 200;
 
-/// Quantidade de melhores indivíduos preservados intactos a cada geração.
-/// O restante da população é preenchido por cópias mutadas do **melhor**
-/// indivíduo (população já ordenada por fitness antes da evolução).
-pub const ELITE_SIZE: usize = 5;
+/// Elites preservados intactos. Aumentado de 5→8: pool um pouco maior
+/// de top performers (diversidade na base da população seguinte).
+pub const ELITE_SIZE: usize = 8;
 
-/// Probabilidade de mutação por gene (peso/bias).
-pub const MUTATION_RATE: f32 = 0.10;
+/// Taxa de mutação por gene. Reduzida de 0.10→0.05: agora a diversidade
+/// principal vem do crossover; mutação passa a ser **refinamento**.
+pub const MUTATION_RATE: f32 = 0.05;
 
-/// Magnitude máxima da perturbação uniforme aplicada a um gene mutado.
-pub const MUTATION_STRENGTH: f32 = 0.2;
+/// Magnitude da perturbação. Reduzida de 0.2→0.15: ajuste mais fino
+/// (menos "salto no escuro", mais "polir o que já funciona").
+pub const MUTATION_STRENGTH: f32 = 0.15;
+
+/// Fração de filhos gerados por **crossover** (resto: clone + mutação).
+/// 0.7 = 70% sexuado, 30% assexual — combina exploração (sexo) com
+/// continuidade (mutação pura do pai).
+pub const CROSSOVER_RATE: f32 = 0.7;
+
+/// Tamanho do torneio para escolher cada pai. k=3 → pressão seletiva
+/// moderada (o melhor de 3 vence, mas o 2º e o 3º ainda têm chance).
+pub const TOURNAMENT_K: usize = 3;
 
 // ---------------------------------------------------------------------------
-// Função de Fitness — Recompensas e Penalidades
+// Função de Fitness
 // ---------------------------------------------------------------------------
 //
-// Modelo: `fitness = score − steps × STEP_COST − death_penalty + win_bonus`.
+// fitness = score − steps×STEP_COST + penalty_estado_final
 //
-// STEP_COST é uma **penalidade** (subtraída), não um bônus — inverter o sinal
-// do antigo `SURVIVAL_MULT` (que somava `+0.05 × steps`) elimina o incentivo
-// para "enrolar" até o timeout. `death_penalty` foi rebaixada de −500 para
-// −200 para que o break-even "comer N e morrer" vs "enrolar 3000 steps"
-// caia de N≈63 (impossível para agentes aleatórios) para N≈15 (alcançável
-// já na geração 1). `win_bonus` foi elevado de 2000 para 5000 para manter
-// dominância clara sobre qualquer combinação de score + timeout.
+// penalty_estado_final:
+//   • GameOver (morreu)     → DEATH_PENALTY
+//   • Playing  (timeout)    → TIMEOUT_PENALTY   ← NOVO
+//   • Win      (venceu)     → WIN_BONUS
+//
+// O TIMEOUT_PENALTY é o que **elimina o "survivalist trap"**: sem ele,
+// um agente que come 60 pellets e fica parado até o timeout (fitness
+// 600−100=500) seria **melhor** que um agente que come 60 pellets e
+// morre tentando explorar (600−22−200=378). Com −500 no timeout, morrer
+// explorando passa a valer 378 e "escondido" passa a valer 500−500=0.
+// Força o comportamento correto: melhor tentar e perder do que travar.
 
-/// Custo por passo de simulação. **Positivo** semanticamente, **subtraído**
-/// em `evaluate()` — pune estagnação sem proibir tempo produtivo.
 pub const FITNESS_STEP_COST: f32 = 0.02;
-
-/// Penalidade por terminar em `GameOver`. Aplicada como **soma** (negativa).
 pub const FITNESS_DEATH_PENALTY: f32 = -200.0;
-
-/// Bônus por vencer (todos os pellets comidos).
+pub const FITNESS_TIMEOUT_PENALTY: f32 = -500.0;
 pub const FITNESS_WIN_BONUS: f32 = 5000.0;
 
 // ---------------------------------------------------------------------------
@@ -74,26 +87,29 @@ pub const FITNESS_WIN_BONUS: f32 = 5000.0;
 pub struct Agent {
     pub game: Game,
     pub controller: NeuralController,
+    pub rng_seed: u64, 
     pub steps: usize,
     pub fitness: f32,
     pub finished: bool,
 }
 
 impl Agent {
-    pub fn new_random(base_map: &Map) -> Self {
+    pub fn new_random(base_map: &Map, seed: u64) -> Self {
         Self {
-            game: Game::with_map(base_map.clone()),
+            game: Game::with_map_and_seed(base_map.clone(), seed),
             controller: NeuralController::random(),
+            rng_seed: seed,
             steps: 0,
             fitness: 0.0,
             finished: false,
         }
     }
 
-    /// Reseta o agente in-place. **Não** toca no `controller` — é assim que
-    /// os elites preservam seus pesos entre gerações.
+    /// Reseta o agente in-place. O `rng_seed` é **preservado** — é o que garante
+    /// que um elite rode contra exatamente a mesma trajetória de fantasmas em
+    /// gerações consecutivas. Só o estado do jogo é recriado.
     pub fn reset(&mut self, base_map: &Map) {
-        self.game = Game::with_map(base_map.clone());
+        self.game = Game::with_map_and_seed(base_map.clone(), self.rng_seed);
         self.steps = 0;
         self.fitness = 0.0;
         self.finished = false;
@@ -126,7 +142,7 @@ impl Agent {
         match self.game.state() {
             GameState::GameOver => self.fitness += FITNESS_DEATH_PENALTY,
             GameState::Win      => self.fitness += FITNESS_WIN_BONUS,
-            GameState::Playing  => {} // timeout: score − step_cost já basta
+            GameState::Playing  => self.fitness += FITNESS_TIMEOUT_PENALTY, 
         }
     }
 }
@@ -135,8 +151,10 @@ impl Agent {
 // Inicialização da População
 // ---------------------------------------------------------------------------
 
-pub fn init_population(size: usize, base_map: &Map) -> Vec<Agent> {
-    (0..size).map(|_| Agent::new_random(base_map)).collect()
+pub fn init_population(size: usize, base_map: &Map, base_seed: u64) -> Vec<Agent> {
+    (0..size)
+        .map(|i| Agent::new_random(base_map, base_seed.wrapping_add(i as u64)))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -191,49 +209,85 @@ pub fn select_top_k_by_fitness(population: &mut [Agent], k: usize) {
 // Evolução — assexual com elitismo + mutação uniforme
 // ---------------------------------------------------------------------------
 
-/// Prepara a próxima geração.
+// ---------------------------------------------------------------------------
+// Evolução — sexuada com torneio + elitismo
+// ---------------------------------------------------------------------------
+
+/// Seleciona um índice via **torneio de tamanho k** sobre o snapshot.
+/// Retorna o índice do melhor entre `k` sorteados uniformemente.
 ///
-/// **Pré-condição:** `population[..ELITE_SIZE]` deve conter os `ELITE_SIZE`
-/// melhores indivíduos em ordem decrescente de fitness (i.e.,
-/// `population[0]` é o melhor). `train.rs` garante isso chamando
-/// `select_top_k_by_fitness(&mut population, ELITE_SIZE)` antes.
+/// Não depende da ordenação da população — pode varrer o vetor inteiro.
+/// É isso que permite que **elites e não-elites** contribuam como pais.
+#[inline]
+fn tournament_select(snapshot: &[(f32, NeuralNet)], k: usize, rng: &mut Rng) -> usize {
+    let mut best = rng.range_usize(snapshot.len());
+    for _ in 1..k {
+        let idx = rng.range_usize(snapshot.len());
+        if snapshot[idx].0 > snapshot[best].0 {
+            best = idx;
+        }
+    }
+    best
+}
+
+/// Prepara a próxima geração (sexuado com torneio + elitismo).
 ///
-/// Os demais elementos (`population[ELITE_SIZE..]`) **não** precisam estar
-/// ordenados — serão sobrescritos pelas cópias mutadas do melhor.
+/// **Pré-condição:** `population[..ELITE_SIZE]` contém os top-K em ordem
+/// decrescente. `train.rs` garante via `select_top_k_by_fitness`.
 ///
-/// Estratégia (assexual, com elitismo):
-/// 1. Preserva os `ELITE_SIZE` melhores **intactos** (rede e tudo).
-/// 2. Cada um dos restantes recebe uma **cópia mutada** do melhor
-///    (índice 0), com `MUTATION_RATE` por gene e perturbação uniforme
-///    em `[-MUTATION_STRENGTH, +MUTATION_STRENGTH)`.
-/// 3. Todos os agentes (elites inclusive) são resetados contra `base_map`.
-pub fn evolve_population(population: &mut [Agent], base_map: &Map) {
+/// **`generation`** entra na derivação da RNG **por geração**. Sem isso,
+/// filhos seriam idênticos quando o elite (e sua seed) não mudasse —
+/// que era exatamente o bug que congelou o treinamento anterior.
+///
+/// Pipeline por filho (índice `i` em `ELITE_SIZE..POPULATION_SIZE`):
+///   1. Pai A ← torneio(k=3) sobre o snapshot
+///   2. Pai B ← torneio(k=3) sobre o snapshot
+///   3. Com prob. `CROSSOVER_RATE` → `child = A.crossover(B)`; senão `child = A.clone()`
+///   4. `child.mutate(MUTATION_RATE, MUTATION_STRENGTH, rng.next())`
+///   5. Nova game seed para o filho: `rng.next()` — diversifica trajetória
+pub fn evolve_population(population: &mut [Agent], base_map: &Map, generation: u64) {
     let n = population.len();
-    debug_assert!(n > ELITE_SIZE, "população menor ou igual a ELITE_SIZE");
+    debug_assert!(n > ELITE_SIZE);
 
-    // Snapshot do melhor indivíduo **antes** de qualquer modificação.
-    let best_net = population[0].controller.net().clone();
+    // Snapshot: fitness + net de cada indivíduo, antes de qualquer escrita.
+    // Clonar 100 redes de ~600 f32 = 60 KB — custo desprezível, e permite
+    // que `tournament_select` consulte o estado ORIGINAL da geração enquanto
+    // sobrescrevemos `population[ELITE_SIZE..]` in-place.
+    let snapshot: Vec<(f32, NeuralNet)> = population
+        .iter()
+        .map(|a| (a.fitness, a.controller.net().clone()))
+        .collect();
 
-    let base_seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0x9E37_79B9_7F4A_7C15);
+    // RNG por geração. Cada geração verá filhos diferentes, mesmo que o
+    // elite (e portanto `parent_net`) permaneça idêntico.
+    let gen_seed = generation
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(0xDEAD_BEEF_CAFE_F00D);
+    let mut rng = Rng::new(gen_seed);
 
-    // 1. Elites: reset do estado do jogo, rede intacta.
+    // 1. Elites: rede e seed intactas, apenas o estado do jogo é resetado.
     for agent in population.iter_mut().take(ELITE_SIZE) {
         agent.reset(base_map);
     }
 
-    // 2. Não-elites: cópia mutada do melhor, com seed distinta por filho.
-    for (i, agent) in population.iter_mut().enumerate().skip(ELITE_SIZE) {
-        let mut child_net = best_net.clone();
-        // Offset no seed garante streams de RNG independentes por filho.
-        let seed = base_seed.wrapping_add(
-            (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
-        );
-        child_net.mutate(MUTATION_RATE, MUTATION_STRENGTH, seed);
+    // 2. Filhos: crossover + mutação + nova seed de jogo.
+    for agent in population.iter_mut().skip(ELITE_SIZE) {
+        let pa = tournament_select(&snapshot, TOURNAMENT_K, &mut rng);
+        let pb = tournament_select(&snapshot, TOURNAMENT_K, &mut rng);
+
+        let mut child_net = if rng.unit() < CROSSOVER_RATE {
+            snapshot[pa].1.crossover(&snapshot[pb].1, &mut rng)
+        } else {
+            snapshot[pa].1.clone()
+        };
+
+        let mut_seed = rng.next();
+        child_net.mutate(MUTATION_RATE, MUTATION_STRENGTH, mut_seed);
+
+        let child_game_seed = rng.next();
 
         agent.controller = NeuralController::new(child_net);
+        agent.rng_seed = child_game_seed;
         agent.reset(base_map);
     }
 }

@@ -3,3 +3,4 @@ pub mod game;
 pub mod ghost;
 pub mod map;
 pub mod player;
+pub mod rng;

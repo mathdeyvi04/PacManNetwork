@@ -102,7 +102,20 @@ fn main() {
 
     let total_start = Instant::now();
 
-    let mut population = init_population(POPULATION_SIZE, &base_map);
+    // --seed <u64> → treinamento reprodutível (mesma seed = mesma trajetória).
+    // Sem --seed, usa relógio do sistema (cada run é única).
+    let base_seed = args.iter()
+        .position(|a| a == "--seed")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0x9E37_79B9_7F4A_7C15)
+        });
+    
+    let mut population = init_population(POPULATION_SIZE, &base_map, base_seed);
     let mut best_ever: Option<BestEver> = None;
 
     for generation in 1..=N_GENERATIONS {
@@ -122,8 +135,9 @@ fn main() {
         select_top_k_by_fitness(&mut population, ELITE_SIZE);
 
         let best = &population[0];
-        let avg_fitness: f32 = population.iter().map(|a| a.fitness).sum::<f32>()
-            / POPULATION_SIZE as f32;
+        let avg = population.iter().map(|a| a.fitness).sum::<f32>() / POPULATION_SIZE as f32;
+        let std_dev = (population.iter().map(|a| (a.fitness - avg).powi(2)).sum::<f32>()
+            / POPULATION_SIZE as f32).sqrt();
 
         // Atualiza o recorde global se o campeão desta geração o superou.
         if best_ever.as_ref().map_or(true, |b| best.fitness > b.fitness) {
@@ -139,7 +153,8 @@ fn main() {
         let stats = GenerationStats {
             generation,
             best_fitness: best.fitness,
-            avg_fitness,
+            avg_fitness: avg,
+            std_dev,
             best_score: best.game.score,
             best_ever_fitness: record.fitness,
             best_ever_generation: record.generation,
@@ -149,7 +164,7 @@ fn main() {
         stats.print_row();
 
         if generation < N_GENERATIONS {
-            evolve_population(&mut population, &base_map);
+            evolve_population(&mut population, &base_map, generation as u64);
         }
     }
 
