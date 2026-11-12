@@ -1,5 +1,8 @@
 game:
-	cargo run
+	cargo run --bin PacManNetwork
 
 nn:
-	cargo run -- nn
+	cargo run --bin PacManNetwork ?
+
+test:
+	cargo run --bin train
