@@ -11,7 +11,7 @@ pub struct Game {
     pub map: Map,
     pub player: Player,
     pub score: u32,
-    score_text: String,
+    // REMOVIDO: score_text: String,
     ghosts: [Ghost; GHOST_COUNT],
     state: GameState,
     mode: GhostMode,
@@ -20,62 +20,60 @@ pub struct Game {
 
 impl Game {
     // O `new()` original agora apenas chama o `with_map`
-        pub fn new() -> Self {
-            Self::with_map(Map::generate())
+    pub fn new() -> Self {
+        Self::with_map(Map::generate())
+    }
+
+    // NOVO: Construtor que recebe um mapa pré-gerado
+    pub fn with_map(map: Map) -> Self {
+        let (sx, sy) = find_spawn(&map);
+        let dir = initial_direction(&map, sx, sy);
+        let player = Player::new(sx, sy, dir);
+
+        let spawns = find_ghost_spawns(&map);
+        let kinds = [GhostKind::Blinky, GhostKind::Pinky, GhostKind::Inky, GhostKind::Clyde];
+        let ghosts = [
+            Ghost::new(spawns[0].0, spawns[0].1, kinds[0]),
+            Ghost::new(spawns[1].0, spawns[1].1, kinds[1]),
+            Ghost::new(spawns[2].0, spawns[2].1, kinds[2]),
+            Ghost::new(spawns[3].0, spawns[3].1, kinds[3]),
+        ];
+
+        Self {
+            map, player, score: 0,
+            // REMOVIDO: score_text: String::from("Score: 0"),
+            ghosts,
+            state: GameState::Playing,
+            mode: GhostMode::Scatter,
+            mode_timer: SCATTER_DURATION,
         }
-    
-        // NOVO: Construtor que recebe um mapa pré-gerado
-        pub fn with_map(map: Map) -> Self {
-            let (sx, sy) = find_spawn(&map);
-            let dir = initial_direction(&map, sx, sy);
-            let player = Player::new(sx, sy, dir);
-    
-            let spawns = find_ghost_spawns(&map);
-            let kinds = [GhostKind::Blinky, GhostKind::Pinky, GhostKind::Inky, GhostKind::Clyde];
-            let ghosts = [
-                Ghost::new(spawns[0].0, spawns[0].1, kinds[0]),
-                Ghost::new(spawns[1].0, spawns[1].1, kinds[1]),
-                Ghost::new(spawns[2].0, spawns[2].1, kinds[2]),
-                Ghost::new(spawns[3].0, spawns[3].1, kinds[3]),
-            ];
-    
-            Self {
-                map, player, score: 0,
-                score_text: String::from("Score: 0"),
-                ghosts,
-                state: GameState::Playing,
-                mode: GhostMode::Scatter,
-                mode_timer: SCATTER_DURATION,
-            }
-        }
+    }
 
     #[inline(always)] pub fn state(&self)      -> GameState   { self.state }
     #[inline(always)] pub fn mode(&self)       -> GhostMode   { self.mode }
     #[inline(always)] pub fn mode_timer(&self) -> f32         { self.mode_timer }
     #[inline(always)] pub fn ghosts(&self)     -> &[Ghost]    { &self.ghosts }
-    #[inline(always)] pub fn score_text(&self) -> &str        { &self.score_text }
+    // REMOVIDO: pub fn score_text(&self) -> &str
 
     #[inline(always)]
     pub fn is_game_over(&self) -> bool {
         self.state == GameState::GameOver
     }
 
+    // Apenas soma o número — sem alocação, sem formatação de string.
     fn add_score(&mut self, amount: u32) {
         if amount == 0 { return; }
         self.score += amount;
-        self.score_text.clear();
-        use std::fmt::Write;
-        let _ = write!(self.score_text, "Score: {}", self.score);
     }
 
     pub fn update(&mut self, dt: f32, action: Action) {
         if self.state != GameState::Playing { return; }
-    
+
         // --- Input (via Action) ---
         if let Action::Move(dir) = action {
             self.player.set_pending(dir);
         }
-    
+
         // --- Player ---
         self.player.update(&self.map, dt);
         let (tx, ty) = self.player.tile();
@@ -86,7 +84,7 @@ impl Game {
                 return;                     // não deixa fantasma matar no mesmo frame
             }
         }
-    
+
         // --- Timer scatter/chase ---
         self.mode_timer -= dt;
         if self.mode_timer <= 0.0 {
@@ -101,7 +99,7 @@ impl Game {
             // Reverter todos ao trocar de modo (regra clássica).
             for g in &mut self.ghosts { g.reverse(); }
         }
-    
+
         // --- Fantasmas ---
         // Snapshot dos dados compartilhados → sem split-borrow manual.
         let player_tile = self.player.tile();
@@ -112,7 +110,7 @@ impl Game {
         for g in &mut self.ghosts {
             g.update(map_ref, player_tile, player_dir, blinky_tile, mode, dt);
         }
-    
+
         // --- Colisão Pac-Man × fantasma (distância², sem sqrt) ---
         let ppos = self.player.pos;
         for g in &self.ghosts {

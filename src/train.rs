@@ -53,6 +53,19 @@ impl Agent {
         }
     }
 
+    /// OTIMIZAÇÃO: reseta o agente in-place, reutilizando a struct `Agent`
+    /// já alocada no `Vec` — zero realocação de `Vec<Agent>` entre gerações.
+    /// Cria um `Game` novo a partir do mapa-base (obrigatório, pois o estado
+    /// do jogo é mutável) e zera os contadores de fitness/passos.
+    fn reset(&mut self, base_map: &Map) {
+        self.game = Game::with_map(base_map.clone());
+        self.steps = 0;
+        self.fitness = 0.0;
+        self.finished = false;
+        // Se futuramente for AG (algoritmo genético), você pode optar por NÃO
+        // resetar o controller aqui, mantendo os pesos da geração anterior!
+    }
+
     fn step(&mut self) {
         if self.finished { return; }
 
@@ -167,10 +180,17 @@ fn main() {
             let _ = best.controller.net().save(&path);
         }
 
-        // 4. Evolução (Placeholder)
+        // 4. Evolução (placeholder → reset in-place)
         if generation < N_GENERATIONS {
-            base_map = Map::generate(); 
-            population = init_population(POPULATION_SIZE, &base_map);
+            base_map = Map::generate();
+
+            // OTIMIZAÇÃO: reutiliza o mesmo `Vec<Agent>` alocado — só muta os
+            // campos de cada agente, sem `Vec::new` nem realocação de heap.
+            for agent in population.iter_mut() {
+                // Cria uma nova rede (por enquanto), mas reaproveita a struct Agent.
+                agent.controller = NeuralController::random();
+                agent.reset(&base_map);
+            }
         }
     }
 

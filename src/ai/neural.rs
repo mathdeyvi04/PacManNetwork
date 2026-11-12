@@ -181,16 +181,31 @@ pub fn encode(game: &Game) -> [f32; INPUT_SIZE] {
         Direction::Left,
         Direction::Right,
     ];
+
+    // OTIMIZAÇÃO: pré-calcula as posições inteiras (tile) dos fantasmas
+    // uma única vez — evita `floor()` dentro dos loops de raycast.
+    let mut ghost_tiles = [(0i32, 0i32); GHOST_COUNT];
+    for (i, g) in game.ghosts().iter().enumerate() {
+        let (gx, gy) = g.tile();
+        ghost_tiles[i] = (gx as i32, gy as i32);
+    }
+
     let mut f = [ENC_NOTHING; INPUT_SIZE];
     for (i, &dir) in DIRS.iter().enumerate() {
-        f[i] = sense(&game.map, game.ghosts(), px, py, dir);
+        f[i] = sense(&game.map, &ghost_tiles, px, py, dir);
     }
     f
 }
 
 /// Raycast a partir de `(px, py)` na direção `dir`.
 #[inline]
-fn sense(map: &Map, ghosts: &[Ghost], px: usize, py: usize, dir: Direction) -> f32 {
+fn sense(
+    map: &Map,
+    ghost_tiles: &[(i32, i32); GHOST_COUNT],
+    px: usize,
+    py: usize,
+    dir: Direction,
+) -> f32 {
     let (dx, dy) = match dir {
         Direction::Up    => (0, -1),
         Direction::Down  => (0,  1),
@@ -210,14 +225,14 @@ fn sense(map: &Map, ghosts: &[Ghost], px: usize, py: usize, dir: Direction) -> f
 
     let mut first_event = ENC_NOTHING;
 
-    // A visão só é bloqueada por paredes. O loop continua varrendo a linha 
+    // A visão só é bloqueada por paredes. O loop continua varrendo a linha
     // para garantir que um fantasma seja detectado mesmo que haja pellets no caminho.
     while x >= 0 && y >= 0 && x < w && y < h {
         // 1. Fantasma tem prioridade absoluta (sobrevivência em primeiro lugar).
         // Ele "atravessa" pellets na visão do sensor.
-        for g in ghosts {
-            let (gx, gy) = g.tile();
-            if gx as i32 == x && gy as i32 == y {
+        // OTIMIZAÇÃO: usa as posições inteiras já pré-calculadas — zero `floor()`.
+        for &(gx, gy) in ghost_tiles {
+            if gx == x && gy == y {
                 return ENC_GHOST;
             }
         }
@@ -225,8 +240,8 @@ fn sense(map: &Map, ghosts: &[Ghost], px: usize, py: usize, dir: Direction) -> f
         let tile = map.tile_at(x as usize, y as usize);
         match tile {
             Tile::Wall => {
-                // A parede bloqueia o sensor. 
-                // Retorna a parede se estava de cara com ela, 
+                // A parede bloqueia o sensor.
+                // Retorna a parede se estava de cara com ela,
                 // ou o primeiro evento (pellet/túnel) que foi visto antes dela.
                 return if first_event == ENC_NOTHING { ENC_WALL } else { first_event };
             }
@@ -251,7 +266,7 @@ fn sense(map: &Map, ghosts: &[Ghost], px: usize, py: usize, dir: Direction) -> f
         y += dy;
     }
 
-    // Se chegou na borda do mapa sem encontrar parede nem fantasma, 
+    // Se chegou na borda do mapa sem encontrar parede nem fantasma,
     // retorna o que tiver visto primeiro (ou ENC_NOTHING se estiver vazio).
     first_event
 }

@@ -24,11 +24,14 @@ impl Renderer {
         }
 
         Self::draw_player(&game.player);
-        draw_text(game.score_text(), 8.0, 16.0, 22.0, COLOR_SCORE);
+
+        // Formata a string apenas na hora de desenhar (60 FPS, custo irrisório).
+        let score_str = format!("Score: {}", game.score);
+        draw_text(&score_str, 8.0, 16.0, 22.0, COLOR_SCORE);
 
         match game.state() {
             GameState::GameOver => Self::draw_game_over(),
-            GameState::Win      => Self::draw_win(game.score_text()),
+            GameState::Win      => Self::draw_win(&score_str),
             GameState::Playing  => {}
         }
     }
