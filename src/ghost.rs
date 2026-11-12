@@ -1,5 +1,5 @@
 use macroquad::prelude::*;
-use crate::rng::Rng;
+use macroquad::rand::gen_range;
 use crate::constants::*;
 use crate::map::Map;
 use crate::player::{Direction, clamp_against_wall};
@@ -75,11 +75,11 @@ impl Ghost {
     }
 
     /// Decide a nova direção num centro de tile, com detecção de loop.
-    fn decide(&mut self, tile: (i16, i16), target: (i32, i32), map: &Map, rng: &mut Rng) -> Direction {
+    fn decide(&mut self, tile: (i16, i16), target: (i32, i32), map: &Map) -> Direction {
         // 1) Detour em curso: passo aleatório (exceto reverso).
         if self.detour > 0 {
             self.detour -= 1;
-            let d = random_non_reverse(self.dir, tile, map, rng);
+            let d = random_non_reverse(self.dir, tile, map);
             self.record(tile, d);
             return d;
         }
@@ -106,7 +106,6 @@ impl Ghost {
         blinky_tile: (usize, usize),
         mode: GhostMode,
         dt: f32,
-        rng: &mut Rng,
     ) {
         let center_x = tile_center(self.pos.x);
         let center_y = tile_center(self.pos.y);
@@ -188,7 +187,7 @@ impl Ghost {
             self.pos = vec2(cx, cy);
             let tile_i16 = (cx.floor() as i16, cy.floor() as i16);
             let target = self.compute_target(player_tile, player_dir, blinky_tile, mode);
-            self.dir = self.decide(tile_i16, target, map, rng);
+            self.dir = self.decide(tile_i16, target, map);
         }
     }
 
@@ -247,53 +246,28 @@ fn tile_center(v: f32) -> f32 {
 }
 
 /// Escolhe uma direção não-reversa uniformemente ao acaso.
-fn random_non_reverse(
-    current: Direction,
-    tile: (i16, i16),
-    map: &Map,
-    rng: &mut Rng,
-) -> Direction {
+fn random_non_reverse(current: Direction, tile: (i16, i16), map: &Map) -> Direction {
     let reverse = current.opposite();
-
     let mut options = [Direction::Up; 3];
     let mut n = 0usize;
-
     for d in Direction::ALL {
-        if d == reverse {
-            continue;
-        }
-
+        if d == reverse { continue; }
         let (dx, dy) = match d {
             Direction::Up    => (0, -1),
             Direction::Down  => (0, 1),
             Direction::Left  => (-1, 0),
             Direction::Right => (1, 0),
         };
-
         let nx = tile.0 + dx;
         let ny = tile.1 + dy;
-
-        if nx < 0
-            || ny < 0
-            || nx >= GRID_WIDTH as i16
-            || ny >= GRID_HEIGHT as i16
-        {
+        if nx < 0 || ny < 0 || nx >= GRID_WIDTH as i16 || ny >= GRID_HEIGHT as i16 {
             continue;
         }
-
-        if map.is_wall_or_tunnel(nx as usize, ny as usize) {
-            continue;
-        }
-
+        if map.is_wall_or_tunnel(nx as usize, ny as usize) { continue; }
         options[n] = d;
         n += 1;
     }
-
-    if n == 0 {
-        reverse
-    } else {
-        options[rng.range_usize(n)]
-    }
+    if n == 0 { reverse } else { options[gen_range(0, n)] }
 }
 
 /// Greedy clássico: minimiza d² ao alvo sem reverter.

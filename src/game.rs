@@ -3,7 +3,6 @@ use crate::ghost::{Ghost, GhostKind, GhostMode};
 use crate::map::Map;
 use crate::player::{Direction, Player};
 use crate::controller::Action;
-use crate::rng::{fresh_seed, Rng};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GameState { Playing, GameOver, Win }
@@ -17,42 +16,17 @@ pub struct Game {
     state: GameState,
     mode: GhostMode,
     mode_timer: f32,
-    rng: Rng,
 }
 
 impl Game {
-    /// Cria um jogo convencional com mapa aleatório.
     pub fn new() -> Self {
-        Self::new_seeded(fresh_seed())
-    }
-
-    /// Cria um jogo com uma seed específica.
-    pub fn new_seeded(seed: u64) -> Self {
-        let map = Map::generate_seeded(seed);
-
-        Self::new_with_map(map, seed)
-    }
-
-    /// Cria um jogo utilizando um mapa fornecido.
-    ///
-    /// O mapa é recebido por valor, permitindo que cada indivíduo
-    /// possua sua própria cópia independente.
-    pub fn new_with_map(map: Map, seed: u64) -> Self {
+        let map = Map::generate();
         let (sx, sy) = find_spawn(&map);
-
         let dir = initial_direction(&map, sx, sy);
-
         let player = Player::new(sx, sy, dir);
 
         let spawns = find_ghost_spawns(&map);
-
-        let kinds = [
-            GhostKind::Blinky,
-            GhostKind::Pinky,
-            GhostKind::Inky,
-            GhostKind::Clyde,
-        ];
-
+        let kinds = [GhostKind::Blinky, GhostKind::Pinky, GhostKind::Inky, GhostKind::Clyde];
         let ghosts = [
             Ghost::new(spawns[0].0, spawns[0].1, kinds[0]),
             Ghost::new(spawns[1].0, spawns[1].1, kinds[1]),
@@ -61,21 +35,12 @@ impl Game {
         ];
 
         Self {
-            map,
-            player,
-            score: 0,
-
+            map, player, score: 0,
             score_text: String::from("Score: 0"),
-
             ghosts,
-
             state: GameState::Playing,
             mode: GhostMode::Scatter,
             mode_timer: SCATTER_DURATION,
-
-            rng: Rng::new(
-                seed ^ 0xA076_1D64_78BD_642F
-            ),
         }
     }
 
@@ -139,18 +104,8 @@ impl Game {
         let blinky_tile = self.ghosts[0].tile();
         let mode        = self.mode;
         let map_ref     = &self.map;
-        let rng = &mut self.rng;
-        
         for g in &mut self.ghosts {
-            g.update(
-                map_ref,
-                player_tile,
-                player_dir,
-                blinky_tile,
-                mode,
-                dt,
-                rng,
-            );
+            g.update(map_ref, player_tile, player_dir, blinky_tile, mode, dt);
         }
     
         // --- Colisão Pac-Man × fantasma (distância², sem sqrt) ---

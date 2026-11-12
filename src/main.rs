@@ -7,7 +7,6 @@ mod neural;
 mod player;
 mod renderer;
 mod neural_viz;
-mod rng;
 
 use constants::*;
 use controller::{Action, Controller, KeyboardController};
@@ -79,7 +78,11 @@ fn parse_cli() -> Mode {
         "--help" | "-h" | "help" => {
             println!("Uso: pacman [comando]");
             println!();
-            println!("  cargo run --release --bin train -- [geracoes] [threads] [seed]");
+            println!("  (sem argumento)          → jogar com o teclado");
+            println!("  human | play             → idem");
+            println!("  nn                       → rede neural (pesos aleatórios)");
+            println!("  nn <arquivo.bin>         → rede neural (pesos carregados)");
+            println!("  gen-weights <arquivo.bin>→ gera pesos aleatórios e salva");
             std::process::exit(0);
         }
         outro => {
