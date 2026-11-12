@@ -42,6 +42,37 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let use_single_thread = args.iter().any(|arg| arg == "--single" || arg == "-s");
 
+    // `--map <path>` carrega um mapa pré-existente; caso contrário, gera um
+    // novo e salva em `map.bin` para reuso futuro.
+    let map_path = args.iter()
+        .position(|a| a == "--map")
+        .and_then(|i| args.get(i + 1).cloned());
+
+    let base_map = match map_path.as_deref() {
+        Some(path) => match Map::load(path) {
+            Ok(m) => {
+                println!("Mapa carregado de '{}' ({} pellets)\n", path, m.pellets_remaining());
+                m
+            }
+            Err(e) => {
+                eprintln!(
+                    "Aviso: falha ao carregar '{}': {}. Gerando um novo mapa.",
+                    path, e
+                );
+                let m = Map::generate();
+                let _ = m.save("map.bin");
+                println!("Mapa novo gerado e salvo em 'map.bin' ({} pellets)\n", m.pellets_remaining());
+                m
+            }
+        },
+        None => {
+            let m = Map::generate();
+            let _ = m.save("map.bin");
+            println!("Mapa novo gerado e salvo em 'map.bin' ({} pellets)\n", m.pellets_remaining());
+            m
+        }
+    };
+
     let mode_str = if use_single_thread {
         "Single-Thread (Sequencial)"
     } else {
@@ -60,7 +91,6 @@ fn main() {
     // Marca o início do treinamento total
     let total_start = Instant::now();
 
-    let mut base_map = Map::generate();
     let mut population = init_population(POPULATION_SIZE, &base_map);
 
     for generation in 1..=N_GENERATIONS {
@@ -101,8 +131,13 @@ fn main() {
         }
 
         // 4. Evolução da próxima geração (delegado ao módulo AG)
+        //
+        // O mapa é FIXO: `base_map` nunca é regenerado. Todos os elite,
+        // filhos e mutações serão avaliados no mesmo ambiente, o que:
+        //   • torna `best_fitness` comparável entre gerações;
+        //   • permite que o elitismo de fato preserve "quem aprendeu este mapa";
+        //   • dá sentido a continuar um treinamento pausado (`--map map.bin`).
         if generation < N_GENERATIONS {
-            base_map = Map::generate();
             evolve_population(&mut population, &base_map);
         }
     }
@@ -112,4 +147,5 @@ fn main() {
 
     println!("----------------------------------------------------------------------");
     println!("Treinamento concluído em {:.2} segundos!", total_elapsed_secs);
+    println!("Mapa usado neste treinamento: 'map.bin' (reutilize com --map map.bin).");
 }

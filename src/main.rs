@@ -8,6 +8,7 @@ use macroquad::prelude::*;
 use constants::*;
 use core::controller::{Action, Controller, KeyboardController};
 use core::game::Game;
+use core::map::Map;
 use ai::neural::NeuralNet;
 use ai::neural::NeuralController;
 use ui::renderer::Renderer;
@@ -32,21 +33,72 @@ fn window_conf() -> Conf {
 }
 
 // ---------------------------------------------------------------------------
+// Carregamento de template de mapa (compartilhado por humano e neural)
+// ---------------------------------------------------------------------------
+
+/// Carrega o template de mapa a partir de um caminho opcional.
+///
+/// * `Some(path)` → carrega o mapa; erro de I/O é **fatal** (`exit(1)`) —
+///   se o usuário pediu um mapa específico, não faz sentido silenciosamente
+///   trocá-lo por um aleatório e esconder o problema.
+/// * `None` → `None` (mapa será gerado aleatoriamente a cada partida).
+///
+/// O `Map` retornado é mantido **intocado** durante toda a sessão — ele é o
+/// "template" que produz uma partida virgem a cada restart.
+fn load_template(map: Option<&str>) -> Option<Map> {
+    match map {
+        Some(p) => match Map::load(p) {
+            Ok(m) => {
+                println!("Mapa carregado de '{}' ({} pellets)", p, m.pellets_remaining());
+                Some(m)
+            }
+            Err(e) => {
+                eprintln!("Falha ao carregar mapa '{}': {}", p, e);
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    }
+}
+
+/// Constrói uma partida nova a partir de um template.
+///
+/// * `Some(template)` → mesma topologia, pellets restaurados via `fresh()`.
+/// * `None` → mapa aleatório novo (`Game::new()`).
+#[inline]
+fn new_game(template: &Option<Map>) -> Game {
+    match template {
+        Some(m) => Game::with_map(m.fresh()),
+        None => Game::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
 enum Mode {
-    Human,
-    Neural { weights: Option<String> },
+    Human {
+        map: Option<String>,
+    },
+    Neural {
+        weights: Option<String>,
+        map: Option<String>,
+    },
 }
 
 fn parse_cli() -> Mode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.is_empty() { return Mode::Human; }
+    if args.is_empty() { return Mode::Human { map: None }; }
 
     match args[0].as_str() {
-        "human" | "play" => Mode::Human,
-        "nn" | "neural" => Mode::Neural { weights: args.get(1).cloned() },
+        "human" | "play" => Mode::Human {
+            map: args.get(1).cloned(),
+        },
+        "nn" | "neural" => Mode::Neural {
+            weights: args.get(1).cloned(),
+            map:     args.get(2).cloned(),
+        },
         "gen-weights" | "gen" => {
             let path = match args.get(1) {
                 Some(p) => p,
@@ -74,11 +126,16 @@ fn parse_cli() -> Mode {
         "--help" | "-h" | "help" => {
             println!("Uso: pacman [comando]");
             println!();
-            println!("  (sem argumento)          → jogar com o teclado");
-            println!("  human | play             → idem");
-            println!("  nn                       → rede neural (pesos aleatórios)");
-            println!("  nn <arquivo.bin>         → rede neural (pesos carregados)");
-            println!("  gen-weights <arquivo.bin>→ gera pesos aleatórios e salva");
+            println!("  (sem argumento)           → jogar com o teclado (mapa aleatório)");
+            println!("  human | play              → idem");
+            println!("  human <mapa.bin>          → jogar em um mapa específico");
+            println!("  nn                        → rede neural (pesos e mapa aleatórios)");
+            println!("  nn <pesos.bin>            → rede neural (pesos carregados, mapa aleatório)");
+            println!("  nn <pesos.bin> <mapa.bin> → rede neural + mapa específico (par de treino)");
+            println!("  gen-weights <arquivo.bin> → gera pesos aleatórios e salva");
+            println!();
+            println!("Em partidas com mapa específico, o restart preserva o mapa (pellets repostos).");
+            println!("Sem mapa, cada restart gera um novo labirinto aleatório.");
             std::process::exit(0);
         }
         outro => {
@@ -122,21 +179,31 @@ impl Controller for AnyController {
 async fn main() {
     let mode = parse_cli();
 
-    let mut game = Game::new();
-    let mut controller = match mode {
-        Mode::Human => AnyController::Keyboard(KeyboardController::new()),
-        Mode::Neural { weights } => {
-            let c = match weights {
-                Some(p) => NeuralController::load(&p)
-                    .unwrap_or_else(|e| {
-                        eprintln!("Falha ao carregar '{}': {}", p, e);
-                        std::process::exit(1);
-                    }),
+    // 1. Constrói o controller conforme o modo, e extrai o caminho do mapa
+    //    (comum aos dois modos). O controller é independente do mapa.
+    let (mut controller, map_path) = match mode {
+        Mode::Human { map } => (
+            AnyController::Keyboard(KeyboardController::new()),
+            map,
+        ),
+        Mode::Neural { weights, map } => {
+            let ctrl = match weights {
+                Some(p) => NeuralController::load(&p).unwrap_or_else(|e| {
+                    eprintln!("Falha ao carregar '{}': {}", p, e);
+                    std::process::exit(1);
+                }),
                 None => NeuralController::random(),
             };
-            AnyController::Neural(c)
+            (AnyController::Neural(ctrl), map)
         }
     };
+
+    // 2. Template do mapa (Some = fixo, None = aleatório a cada restart).
+    //    O template é preservado intocado durante toda a sessão.
+    let template = load_template(map_path.as_deref());
+
+    // 3. Primeira partida.
+    let mut game = new_game(&template);
 
     let renderer = Renderer::new();
 
@@ -147,7 +214,10 @@ async fn main() {
         let action = controller.poll(&game);
 
         if game.is_finished() && action == Action::Restart {
-            game = Game::new();
+            // `new_game` decide entre:
+            //   • template presente → mesmo mapa, pellets repostos (`fresh`);
+            //   • template ausente  → novo labirinto aleatório (`Game::new`).
+            game = new_game(&template);
         } else {
             game.update(dt, action);
         }

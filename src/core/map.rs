@@ -1,6 +1,27 @@
+use std::fs::File;
+use std::io::{self, Read, Write};
+use std::path::Path;
+
 use macroquad::rand::{gen_range, srand};
 
 use crate::constants::*;
+
+// ---------------------------------------------------------------------------
+// Formato de arquivo de mapa
+// ---------------------------------------------------------------------------
+//
+// MAGIC (8) | VERSION (u32 LE) | GRID_WIDTH (u32 LE) | GRID_HEIGHT (u32 LE)
+//         | tiles (GRID_WIDTH * GRID_HEIGHT bytes, 1 byte por Tile)
+//
+// O arquivo representa o **template** do mapa, não um snapshot de estado:
+//   byte 0 = Wall   |  byte 1 = Walkable (vira Pellet no load)
+//   byte 2 = legado (Empty, aceito no load → Pellet) |  byte 3 = Tunnel
+//
+// `pellets_remaining` NÃO é serializado — é recomputado no `load` a partir
+// dos tiles, garantindo consistência. Todo mapa carregado nasce virgem.
+
+const MAP_MAGIC: &[u8; 8] = b"PACMAP01";
+const MAP_VERSION: u32 = 1;
 
 /// Conteúdo de uma célula do grid.
 #[repr(u8)]
@@ -10,6 +31,26 @@ pub enum Tile {
     Pellet,
     Empty,
     Tunnel,
+}
+
+impl Tile {
+    /// Discriminante `u8` (`#[repr(u8)]`) — usado pela (de)serialização.
+    #[inline(always)]
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Converte o byte de volta para `Tile`. Retorna `None` se inválido.
+    #[inline]
+    pub fn from_u8(v: u8) -> Option<Tile> {
+        match v {
+            0 => Some(Tile::Wall),
+            1 => Some(Tile::Pellet),
+            2 => Some(Tile::Empty),
+            3 => Some(Tile::Tunnel),
+            _ => None,
+        }
+    }
 }
 
 /// Labirinto em grid de tiles.
@@ -24,7 +65,7 @@ pub struct Map {
 }
 
 impl Map {
-    
+
     /// Converte coordenadas `(x, y)` no índice flat do vetor `tiles`.
     #[inline(always)]
     fn idx(x: usize, y: usize) -> usize {
@@ -112,7 +153,7 @@ impl Map {
         tiles[Self::idx(GRID_WIDTH - 1, TUNNEL_ROW)] = Tile::Tunnel;
         tiles[Self::idx(1, TUNNEL_ROW)] = Tile::Empty;
         tiles[Self::idx(GRID_WIDTH - 2, TUNNEL_ROW)] = Tile::Empty;
-        
+
         // (fill de pellets já existente abaixo — converte Empty→Pellet)
         let mut pellets_remaining = 0usize;
         for t in tiles.iter_mut() {
@@ -164,4 +205,124 @@ impl Map {
     pub fn pellets_remaining(&self) -> usize {
         self.pellets_remaining
     }
+
+    /// Retorna uma cópia do mapa com a **mesma topologia** (paredes, túneis,
+    /// corredores), mas com todas as pastilhas restauradas.
+    ///
+    /// Útil para reiniciar uma partida sem tocar em disco: o `Game` pode
+    /// ser recriado a partir de `game.map.fresh()`.
+    ///
+    /// O invariante "todo tile `Empty` é uma pastilha comida" vale porque
+    /// `generate()` converte **todos** os `Empty` iniciais em `Pellet`.
+    #[inline]
+    pub fn fresh(&self) -> Self {
+        let mut tiles: Box<[Tile]> = self.tiles.clone();
+        let mut pellets_remaining = 0usize;
+        for t in tiles.iter_mut() {
+            if *t == Tile::Empty {
+                *t = Tile::Pellet;
+            }
+            if *t == Tile::Pellet {
+                pellets_remaining += 1;
+            }
+        }
+        Map { tiles, pellets_remaining }
+    }
+
+    // -----------------------------------------------------------------------
+    // Persistência
+    // -----------------------------------------------------------------------
+
+    /// Serializa o mapa em disco (formato binário próprio — ver topo do módulo).
+    pub fn save(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        let mut f = File::create(path)?;
+        f.write_all(MAP_MAGIC)?;
+        f.write_all(&MAP_VERSION.to_le_bytes())?;
+        f.write_all(&(GRID_WIDTH  as u32).to_le_bytes())?;
+        f.write_all(&(GRID_HEIGHT as u32).to_le_bytes())?;
+
+        // O arquivo representa o *template* do mapa, não um snapshot de estado.
+        // Qualquer tile caminhável não-túnel (Pellet ou Empty) é gravado como
+        // "caminhável com pastilha" (byte 1) — pois ao carregar queremos
+        // sempre um mapa virgem. Pastilhas consumidas não são persistidas.
+        let buf: Vec<u8> = self.tiles.iter().map(|t| match t {
+            Tile::Wall                 => 0u8,
+            Tile::Pellet | Tile::Empty => 1u8,
+            Tile::Tunnel               => 3u8,
+        }).collect();
+        f.write_all(&buf)?;
+        Ok(())
+    }
+
+    /// Lê um mapa previamente salvo por `save`.
+    ///
+    /// Valida magic, versão e dimensões — rejeita arquivos incompatíveis com
+    /// a build atual (mudou `GRID_WIDTH`/`GRID_HEIGHT`). `pellets_remaining`
+    /// é recomputado a partir dos tiles (não confia em estado externo).
+    pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
+        let mut f = File::open(path)?;
+
+        let mut magic = [0u8; 8];
+        f.read_exact(&mut magic)?;
+        if &magic != MAP_MAGIC {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "magic inválido"));
+        }
+
+        let version = read_u32(&mut f)?;
+        if version != MAP_VERSION {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "versão incompatível"));
+        }
+
+        let w = read_u32(&mut f)? as usize;
+        let h = read_u32(&mut f)? as usize;
+        if w != GRID_WIDTH || h != GRID_HEIGHT {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "dimensões incompatíveis com a build atual",
+            ));
+        }
+
+        let total = w * h;
+        let mut tiles: Vec<Tile> = Vec::with_capacity(total);
+        let mut pellets_remaining = 0usize;
+        let mut byte = [0u8; 1];
+
+        for _ in 0..total {
+            f.read_exact(&mut byte)?;
+            // Compatibilidade com saves antigos: byte 2 era `Tile::Empty` (pastilha
+            // comida). Hoje `save` nunca escreve 2, mas aceitamos por robustez —
+            // de qualquer forma, um mapa carregado é SEMPRE virgem.
+            let t = match byte[0] {
+                0        => Tile::Wall,
+                1 | 2    => Tile::Pellet,
+                3        => Tile::Tunnel,
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "byte de tile inválido",
+                    ))
+                }
+            };
+            if t == Tile::Pellet {
+                pellets_remaining += 1;
+            }
+            tiles.push(t);
+        }
+
+        Ok(Map {
+            tiles: tiles.into_boxed_slice(),
+            pellets_remaining,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+#[inline]
+fn read_u32(f: &mut File) -> io::Result<u32> {
+    let mut buf = [0u8; 4];
+    f.read_exact(&mut buf)?;
+    Ok(u32::from_le_bytes(buf))
 }
