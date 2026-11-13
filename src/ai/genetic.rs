@@ -23,7 +23,7 @@ pub const N_GENERATIONS: usize = 9999;
 // ---------- ELITISMO: menos rígido ----------
 // 8 elites congelados bloqueiam exploração. Reduzir para 3 libera
 // mais slots para descendentes reais (não clones do mesmo pool).
-pub const ELITE_SIZE: usize = 3;
+pub const ELITE_SIZE: usize = 4;
 
 // ---------- MUTAÇÃO BASE: mais forte ----------
 // 0.05/0.15 nunca atravessa vales de fitness. 0.15/0.35 é o mínimo
@@ -44,8 +44,8 @@ pub const IMMIGRATION_INTERVAL: u64 = 15;
 pub const IMMIGRATION_FRACTION: f32 = 0.10;
 
 // ---------- CROSSOVER: manter, mas adicionar ruído ----------
-pub const CROSSOVER_RATE: f32 = 0.7;
-pub const TOURNAMENT_K: usize = 3;
+pub const CROSSOVER_RATE: f32 = 0.4;
+pub const TOURNAMENT_K: usize = 6;
 
 // ---------- FITNESS: tornar timeout realmente caro ----------
 // ---------- FITNESS: gradiente de completude em vez de binário ----------
@@ -320,14 +320,19 @@ pub fn evolve_population(
         agent.controller = NeuralController::new(child_net);
     }
 
-    // Imigrantes aleatórios: quebram a homogeneidade dos elites.
-    // Substitui os PIORES (últimos slots) — nunca os elites.
+    // Imigrantes aleatórios puros quase nunca sobrevivem; o que funciona é
+    // explorar a VIZINHANÇA do campeão com perturbação agressiva.
     if generation > 0 && generation % IMMIGRATION_INTERVAL == 0 {
         let n_immigrants = ((n as f32) * IMMIGRATION_FRACTION) as usize;
         let start = n.saturating_sub(n_immigrants);
+        
+        // snapshot[0] é o elite (campeão, ainda não modificado).
+        let champion = &snapshot[0].1;
         for i in start..n {
-            let imm_seed = rng.next();
-            population[i].controller = NeuralController::random_with_seed(imm_seed);
+            let mut child = champion.clone();
+            let seed = rng.next();
+            child.mutate(0.35, 0.55, seed);  // agressivo, mas entorno do campeão
+            population[i].controller = NeuralController::new(child);
         }
     }
 }

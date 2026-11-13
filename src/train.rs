@@ -7,6 +7,7 @@ use core::map::Map;
 use ai::genetic::*;
 use ai::neural::NeuralNet;
 use utils::logger::GenerationStats;
+use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
 use std::time::Instant;
@@ -37,6 +38,7 @@ fn simulate_generation_single(population: &mut [Agent], base_map: &Map, seeds: &
 /// anterior — seja por competição com mutações posteriores, seja por
 /// variação de fitness causada pelo RNG global dos fantasmas (rayon
 /// intercala `gen_range` de forma não-determinística entre threads).
+#[derive(Clone)]
 struct BestEver {
     fitness: f32,
     generation: usize,
@@ -114,6 +116,70 @@ fn main() {
     let mut population = init_population(POPULATION_SIZE, &base_map, base_seed);
     let mut best_ever: Option<BestEver> = None;
 
+    // -----------------------------------------------------------------------
+    // Snapshot compartilhado com o handler de Ctrl+C.
+    //
+    // A thread do handler precisa acessar a melhor rede **sem** depender
+    // do `best_ever` local do `main` (que vive na stack). Usamos um
+    // `Arc<Mutex<Option<BestEver>>>` — o `Mutex` deserializa o acesso,
+    // e o `Option` representa "ainda não rodou nenhuma geração".
+    // -----------------------------------------------------------------------
+    let best_snapshot: Arc<Mutex<Option<BestEver>>> = Arc::new(Mutex::new(None));
+    
+    // -----------------------------------------------------------------------
+    // Handler de SIGINT (Ctrl+C).
+    //
+    // Roda numa thread própria (cortesia do crate `ctrlc`), o que nos
+    // permite fazer I/O e travar mutex sem violar regras de async-signal-
+    // safety do POSIX. Estratégia:
+    //
+    //   1. Tenta ler o snapshot (a melhor rede já completa até agora).
+    //   2. Salva em arquivo *distinto* do `best_gen_XXX.bin` final, para
+    //      o usuário distinguir "treino concluído" de "treino interrompido".
+    //   3. `exit(130)` — 128 + SIGINT, convenção Unix.
+    //
+    // Se o mutex estiver envenenado (main thread panickou enquanto o
+    // segurava) ou o snapshot estiver vazio (Ctrl+C antes da G1 terminar),
+    // apenas imprime aviso e sai mesmo assim — não há como salvar nada útil.
+    // -----------------------------------------------------------------------
+    {
+        let snapshot = Arc::clone(&best_snapshot);
+        if let Err(e) = ctrlc::set_handler(move || {
+            eprintln!("\n[!] Ctrl+C recebido — salvando a melhor rede conhecida...");
+    
+            match snapshot.lock() {
+                Ok(guard) => match guard.as_ref() {
+                    Some(best) => {
+                        let filename = format!(
+                            "best_interrupted_gen_{:03}.bin",
+                            best.generation
+                        );
+                        match best.net.save(&filename) {
+                            Ok(()) => eprintln!(
+                                "[!] Salvo em '{}' (geração {}, fitness {:+.2}, score {})",
+                                filename, best.generation, best.fitness, best.score,
+                            ),
+                            Err(err) => eprintln!(
+                                "[!] Erro ao salvar '{}': {}", filename, err
+                            ),
+                        }
+                    }
+                    None => eprintln!(
+                        "[!] Nenhuma geração completada ainda — nada a salvar."
+                    ),
+                },
+                Err(_) => eprintln!(
+                    "[!] Mutex envenenado — saindo sem salvar."
+                ),
+            }
+    
+            std::process::exit(130);
+        }) {
+            eprintln!("[!] Aviso: não foi possível instalar o handler de Ctrl+C: {}", e);
+            eprintln!("    O treinamento continuará, mas Ctrl+C encerrará sem salvar.");
+        }
+    }
+
     let mut gens_since_improvement: u64 = 0;
     let mut prev_best_ever = f32::NEG_INFINITY;
 
@@ -143,9 +209,16 @@ fn main() {
             best_ever = Some(BestEver {
                 fitness: best.fitness,
                 generation,
-                score: best.avg_score,           
+                score: best.avg_score,
                 net: best.controller.net().clone(),
             });
+        
+            // Espelha no snapshot compartilhado para o handler de Ctrl+C.
+            // Bloqueia por nanossegundos; contenção com o handler é
+            // teórica (ele só dispara uma vez).
+            if let Ok(mut guard) = best_snapshot.lock() {
+                *guard = best_ever.clone();
+            }
         }
         let record = best_ever.as_ref().unwrap();
 

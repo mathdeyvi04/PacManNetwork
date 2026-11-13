@@ -42,13 +42,15 @@ impl Game {
     /// Construtor para treinamento — seed **explícita** para reprodutibilidade.
     /// Mesma rede + mesma seed + mesmo mapa ⇒ mesma trajetória.
     pub fn with_map_and_seed(map: Map, seed: u64) -> Self {
-        let player_spawn = find_spawn(&map);
+        let (player_spawn, ghost_spawn) = generate_spawns(&map, seed);
         let player_init_dir = initial_direction(&map, player_spawn.0, player_spawn.1);
-        let ghost_spawns = find_ghost_spawns(&map);
-    
+        
+        // Todos os fantasmas nascem no mesmo ponto
+        let ghost_spawns = [ghost_spawn; GHOST_COUNT];
+
         let player = Player::new(player_spawn.0, player_spawn.1, player_init_dir);
-        let ghosts = spawn_ghosts(&ghost_spawns, seed);   // ← helper novo
-    
+        let ghosts = spawn_ghosts(&ghost_spawns, seed);
+
         Self {
             map, player, score: 0, ghosts,
             state: GameState::Playing,
@@ -65,8 +67,16 @@ impl Game {
     /// Usado em `Agent::evaluate_multi` para as seeds 2..K.
     pub fn reset_in_place(&mut self, seed: u64) {
         self.map.reset_pellets();
+        
+        // Recalcula os spawns para a nova seed
+        let (player_spawn, ghost_spawn) = generate_spawns(&self.map, seed);
+        self.player_spawn = player_spawn;
+        self.player_init_dir = initial_direction(&self.map, player_spawn.0, player_spawn.1);
+        self.ghost_spawns = [ghost_spawn; GHOST_COUNT];
+
         self.player = Player::new(self.player_spawn.0, self.player_spawn.1, self.player_init_dir);
-        self.ghosts = spawn_ghosts(&self.ghost_spawns, seed);  // ← helper novo
+        self.ghosts = spawn_ghosts(&self.ghost_spawns, seed);
+        
         self.score = 0;
         self.state = GameState::Playing;
         self.mode = GhostMode::Scatter;
@@ -158,15 +168,6 @@ impl Game {
 // Spawns
 // ---------------------------------------------------------------------------
 
-fn find_spawn(map: &Map) -> (usize, usize) {
-    for y in (1..GRID_HEIGHT - 1).rev() {
-        for x in 1..GRID_WIDTH - 1 {
-            if !map.is_wall(x, y) { return (x, y); }
-        }
-    }
-    (1, 1)
-}
-
 fn initial_direction(map: &Map, x: usize, y: usize) -> Direction {
     for d in Direction::ALL {
         let (nx, ny) = match d {
@@ -176,37 +177,6 @@ fn initial_direction(map: &Map, x: usize, y: usize) -> Direction {
         if !map.is_wall(nx, ny) { return d; }
     }
     Direction::Right
-}
-
-/// Coleta 4 tiles livres no terço superior — 1 por linha, para
-/// dispersar os fantasmas. Duas passadas O(N), zero alocação.
-fn find_ghost_spawns(map: &Map) -> [(usize, usize); 4] {
-    let mut spawns = [(1usize, 1usize); 4];
-    let mut found = 0usize;
-    let y_limit = GRID_HEIGHT / 3;
-
-    for y in 1..y_limit {
-        for x in 1..GRID_WIDTH - 1 {
-            if !map.is_wall(x, y) {
-                spawns[found] = (x, y);
-                found += 1;
-                break; // pega 1 por linha → dispersão natural
-            }
-        }
-        if found == 4 { return spawns; }
-    }
-
-    // Fallback (mapa muito hostil no topo): varre o resto.
-    'outer: for y in 1..GRID_HEIGHT - 1 {
-        for x in 1..GRID_WIDTH - 1 {
-            if !map.is_wall(x, y) {
-                spawns[found] = (x, y);
-                found += 1;
-                if found == 4 { break 'outer; }
-            }
-        }
-    }
-    spawns
 }
 
 /// Cria os 4 fantasmas com direção inicial pseudoaleatória derivada da seed.
@@ -237,4 +207,55 @@ fn spawn_ghosts(spawns: &[(usize, usize); GHOST_COUNT], seed: u64) -> [Ghost; GH
     }
 
     ghosts
+}
+
+/// Gera posições de spawn aleatórias para Pac-Man e Fantasmas.
+/// 
+/// Utiliza uma amostragem aleatória (rejection sampling) limitada a 1000 tentativas,
+/// o que é suficiente para encontrar tiles livres em labirintos gerados pelo algoritmo atual.
+/// Garante uma distância mínima (euclidiana) de 15 tiles entre o Pac-Man e os fantasmas.
+fn generate_spawns(map: &Map, seed: u64) -> ((usize, usize), (usize, usize)) {
+    // Rng separado para não consumir o stream de gameplay
+    let mut rng = Rng::new(seed ^ 0x9E37_79B9_7F4A_7C15);
+    
+    // 1. Sorteia posição do Pac-Man
+    let mut p_spawn = (1, 1);
+    for _ in 0..1000 {
+        let x = rng.range_usize(GRID_WIDTH - 2) + 1;
+        let y = rng.range_usize(GRID_HEIGHT - 2) + 1;
+        if !map.is_wall(x, y) {
+            p_spawn = (x, y);
+            break;
+        }
+    }
+
+    // 2. Sorteia posição dos fantasmas (todos no mesmo ponto) com distância mínima
+    const MIN_DIST_SQ: i32 = 15 * 15; // Distância de 15 tiles
+    let mut best_g = p_spawn;
+    let mut max_dist_sq = -1;
+
+    for _ in 0..1000 {
+        let x = rng.range_usize(GRID_WIDTH - 2) + 1;
+        let y = rng.range_usize(GRID_HEIGHT - 2) + 1;
+        
+        if map.is_wall(x, y) { continue; }
+
+        let dx = p_spawn.0 as i32 - x as i32;
+        let dy = p_spawn.1 as i32 - y as i32;
+        let d2 = dx * dx + dy * dy;
+
+        // Guarda o fallback mais distante encontrado até agora
+        if d2 > max_dist_sq {
+            max_dist_sq = d2;
+            best_g = (x, y);
+        }
+
+        // Se satisfez a distância mínima, podemos parar
+        if d2 >= MIN_DIST_SQ {
+            return (p_spawn, (x, y));
+        }
+    }
+
+    // Fallback: caso o mapa seja muito pequeno ou hostil, usa o mais distante que achou
+    (p_spawn, best_g)
 }
