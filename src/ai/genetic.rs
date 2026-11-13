@@ -57,6 +57,23 @@ pub const CROSSOVER_RATE: f32 = 0.7;
 /// moderada (o melhor de 3 vence, mas o 2º e o 3º ainda têm chance).
 pub const TOURNAMENT_K: usize = 3;
 
+// Cada agente é avaliado contra K partidas com estas K sementes FIXAS,
+// e o fitness reportado é a MÉDIA. Sem isso, um agente pode parecer
+// ótimo por ter recebido uma trajetória sortuda de fantasmas, e o elite
+// sortudo fica preso no topo por centenas de gerações.
+//
+// Escolhidas por serem valores "aleatórios" com boa distribuição de
+// bits — qualquer conjunto de constantes serve, desde que fixo.
+//
+// Para aumentar robustez, aumente o array. Custo: treino K× mais lento.
+pub const EVAL_SEEDS: [u64; 5] = [
+    0xDEAD_BEEF_CAFE_F00D,
+    0x0F0F_0F0F_0F0F_0F0F,
+    0x5555_5555_5555_5555,
+    0xAAAA_AAAA_AAAA_AAAA,
+    0x1234_5678_9ABC_DEF0,
+];
+
 // ---------------------------------------------------------------------------
 // Função de Fitness
 // ---------------------------------------------------------------------------
@@ -87,63 +104,90 @@ pub const FITNESS_WIN_BONUS: f32 = 5000.0;
 pub struct Agent {
     pub game: Game,
     pub controller: NeuralController,
-    pub rng_seed: u64, 
-    pub steps: usize,
+    // pub steps: usize,     // ← deletar (nunca lido)
     pub fitness: f32,
-    pub finished: bool,
+    pub avg_score: u32,
+    // pub finished: bool,    // ← deletar (nunca lido)
 }
 
 impl Agent {
-    pub fn new_random(base_map: &Map, seed: u64) -> Self {
+    /// Cria um agente com pesos aleatórios (`net_seed`) e um jogo vazio.
+    /// O jogo inicial é descartado em `evaluate_multi` — só existe para
+    /// satisfazer o tipo.
+    pub fn new_random(base_map: &Map, net_seed: u64) -> Self {
         Self {
-            game: Game::with_map_and_seed(base_map.clone(), seed),
-            controller: NeuralController::random(),
-            rng_seed: seed,
-            steps: 0,
+            game: Game::with_map_and_seed(base_map.clone(), net_seed),
+            controller: NeuralController::random_with_seed(net_seed),
             fitness: 0.0,
-            finished: false,
+            avg_score: 0,
         }
     }
 
-    /// Reseta o agente in-place. O `rng_seed` é **preservado** — é o que garante
-    /// que um elite rode contra exatamente a mesma trajetória de fantasmas em
-    /// gerações consecutivas. Só o estado do jogo é recriado.
-    pub fn reset(&mut self, base_map: &Map) {
-        self.game = Game::with_map_and_seed(base_map.clone(), self.rng_seed);
-        self.steps = 0;
-        self.fitness = 0.0;
-        self.finished = false;
-    }
-
-    /// Avança a simulação em um passo de tempo.
-    pub fn step(&mut self) {
-        if self.finished {
-            return;
-        }
-
-        let action = self.controller.poll(&self.game);
-        self.game.update(DT, action);
-        self.steps += 1;
-
-        if self.game.is_finished() || self.steps >= MAX_STEPS {
-            self.finished = true;
-            self.evaluate();
-        }
-    }
-
-    /// Avalia o fitness ao final da simulação.
+    /// Avalia a rede contra K partidas (sementes fornecidas) e atribui
+    /// a **média de fitness** em `self.fitness` e a **média de score**
+    /// em `self.avg_score`.
     ///
-    /// `Playing` (timeout sem fim explícito) simplesmente não aplica nem
-    /// penalidade nem bônus: `fitness = score − step_cost`. Isso mantém o
-    /// gradiente "comer mais rápido > comer devagar > enrolar" uniforme.
-    fn evaluate(&mut self) {
-        self.fitness = self.game.score as f32 - (self.steps as f32 * FITNESS_STEP_COST);
+    /// **Otimização:** a primeira seed usa `with_map_and_seed` (uma
+    /// alocação de Game + varredura do mapa para achar spawns). As
+    /// seeds seguintes usam `Game::reset_in_place`, que restaura o
+    /// estado sem re-alocar e sem re-varrer o mapa.
+    ///
+    /// **Pré-condição:** `base_map` é um template virgem (todo `Empty`
+    /// é uma pastilha comida por alguma partida anterior do template).
+    /// O `with_map_and_seed` clona, então o template permanece intocado.
+    pub fn evaluate_multi(&mut self, base_map: &Map, seeds: &[u64]) {
+        debug_assert!(!seeds.is_empty(), "seeds não pode ser vazio");
 
-        match self.game.state() {
-            GameState::GameOver => self.fitness += FITNESS_DEATH_PENALTY,
-            GameState::Win      => self.fitness += FITNESS_WIN_BONUS,
-            GameState::Playing  => self.fitness += FITNESS_TIMEOUT_PENALTY, 
+        let mut fitness_sum = 0.0f32;
+        let mut score_sum = 0u64;
+
+        // ─── Primeira seed: inicialização completa (1 clone do template) ──
+        self.game = Game::with_map_and_seed(base_map.clone(), seeds[0]);
+        fitness_sum += Self::run_episode(&mut self.controller, &mut self.game);
+        score_sum += self.game.score as u64;
+
+        // ─── Seeds seguintes: reset in-place (zero alocação) ──
+        for &seed in &seeds[1..] {
+            self.game.reset_in_place(seed);
+            fitness_sum += Self::run_episode(&mut self.controller, &mut self.game);
+            score_sum += self.game.score as u64;
         }
+
+        let k = seeds.len() as f32;
+        self.fitness = fitness_sum / k;
+        self.avg_score = (score_sum as f32 / k).round() as u32;
+    }
+
+    /// Roda **uma partida completa** com o `controller` e `game` dados,
+    /// até o jogo encerrar (`GameOver`/`Win`) ou `MAX_STEPS` ser atingido.
+    ///
+    /// **Retorna** o fitness da partida **individual** (não a média).
+    /// A agregação em média fica em `evaluate_multi`.
+    ///
+    /// **Por que é função associada (não método `&mut self`):** precisamos
+    /// emprestar `&mut self.controller` e `&mut self.game` **ao mesmo
+    /// tempo**. Como são campos disjuntos de `Agent`, Rust permite. Se
+    /// fosse `fn run_episode(&mut self)`, o `self` inteiro estaria
+    /// emprestado uma vez e o compilador reclamaria.
+    fn run_episode(ctrl: &mut NeuralController, game: &mut Game) -> f32 {
+        let mut steps = 0usize;
+
+        while !game.is_finished() && steps < MAX_STEPS {
+            // `game: &mut Game` → coerção automática para `&Game` no `poll`.
+            let action = ctrl.poll(game);
+            game.update(DT, action);
+            steps += 1;
+        }
+
+        // Mesma fórmula de antes — apenas com `steps` local em vez de
+        // `self.steps` (que não é mais usado por ninguém).
+        game.score as f32
+            - steps as f32 * FITNESS_STEP_COST
+            + match game.state() {
+                GameState::GameOver => FITNESS_DEATH_PENALTY,
+                GameState::Win      => FITNESS_WIN_BONUS,
+                GameState::Playing  => FITNESS_TIMEOUT_PENALTY,
+            }
     }
 }
 
@@ -233,44 +277,33 @@ fn tournament_select(snapshot: &[(f32, NeuralNet)], k: usize, rng: &mut Rng) -> 
 /// Prepara a próxima geração (sexuado com torneio + elitismo).
 ///
 /// **Pré-condição:** `population[..ELITE_SIZE]` contém os top-K em ordem
-/// decrescente. `train.rs` garante via `select_top_k_by_fitness`.
+/// decrescente de fitness. `train.rs` garante via `select_top_k_by_fitness`.
 ///
-/// **`generation`** entra na derivação da RNG **por geração**. Sem isso,
-/// filhos seriam idênticos quando o elite (e sua seed) não mudasse —
-/// que era exatamente o bug que congelou o treinamento anterior.
+/// **`generation`** entra na derivação da RNG por geração. Sem isso, filhos
+/// seriam idênticos quando o elite não mudasse.
 ///
-/// Pipeline por filho (índice `i` em `ELITE_SIZE..POPULATION_SIZE`):
-///   1. Pai A ← torneio(k=3) sobre o snapshot
-///   2. Pai B ← torneio(k=3) sobre o snapshot
-///   3. Com prob. `CROSSOVER_RATE` → `child = A.crossover(B)`; senão `child = A.clone()`
-///   4. `child.mutate(MUTATION_RATE, MUTATION_STRENGTH, rng.next())`
-///   5. Nova game seed para o filho: `rng.next()` — diversifica trajetória
-pub fn evolve_population(population: &mut [Agent], base_map: &Map, generation: u64) {
+/// **Não toca em `game`, `fitness` nem `finished`.** A próxima simulação
+/// (`evaluate_multi`) reinicia tudo. Só os `controller`s (pesos) são
+/// modificados — elites preservam; filhos recombinam + mutam.
+pub fn evolve_population(population: &mut [Agent], generation: u64) {
     let n = population.len();
     debug_assert!(n > ELITE_SIZE);
 
     // Snapshot: fitness + net de cada indivíduo, antes de qualquer escrita.
-    // Clonar 100 redes de ~600 f32 = 60 KB — custo desprezível, e permite
-    // que `tournament_select` consulte o estado ORIGINAL da geração enquanto
-    // sobrescrevemos `population[ELITE_SIZE..]` in-place.
     let snapshot: Vec<(f32, NeuralNet)> = population
         .iter()
         .map(|a| (a.fitness, a.controller.net().clone()))
         .collect();
 
-    // RNG por geração. Cada geração verá filhos diferentes, mesmo que o
-    // elite (e portanto `parent_net`) permaneça idêntico.
     let gen_seed = generation
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
         .wrapping_add(0xDEAD_BEEF_CAFE_F00D);
     let mut rng = Rng::new(gen_seed);
 
-    // 1. Elites: rede e seed intactas, apenas o estado do jogo é resetado.
-    for agent in population.iter_mut().take(ELITE_SIZE) {
-        agent.reset(base_map);
-    }
+    // 1. Elites: `population[..ELITE_SIZE]` já contém as melhores redes
+    //    no `controller`. Nada a fazer aqui — apenas NÃO sobrescrevê-las.
 
-    // 2. Filhos: crossover + mutação + nova seed de jogo.
+    // 2. Filhos: crossover + mutação.
     for agent in population.iter_mut().skip(ELITE_SIZE) {
         let pa = tournament_select(&snapshot, TOURNAMENT_K, &mut rng);
         let pb = tournament_select(&snapshot, TOURNAMENT_K, &mut rng);
@@ -284,10 +317,6 @@ pub fn evolve_population(population: &mut [Agent], base_map: &Map, generation: u
         let mut_seed = rng.next();
         child_net.mutate(MUTATION_RATE, MUTATION_STRENGTH, mut_seed);
 
-        let child_game_seed = rng.next();
-
         agent.controller = NeuralController::new(child_net);
-        agent.rng_seed = child_game_seed;
-        agent.reset(base_map);
     }
 }

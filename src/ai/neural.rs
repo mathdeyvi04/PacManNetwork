@@ -357,6 +357,13 @@ impl NeuralController {
         Self::new(NeuralNet::random(seed))
     }
 
+    /// Versão reprodutível de `random`. Mesmo seed → mesma rede inicial.
+    /// Usado pelo AG para que um treino com `--seed 42` produza exatamente
+    /// os mesmos pesos iniciais em toda a população.
+    pub fn random_with_seed(seed: u64) -> Self {
+        Self::new(NeuralNet::random(seed))
+    }
+
     pub fn load(path: impl AsRef<Path>) -> io::Result<Self> {
         Ok(Self::new(NeuralNet::load(path)?))
     }

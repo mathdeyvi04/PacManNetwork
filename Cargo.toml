@@ -3,6 +3,14 @@ name = "PacManNetwork"
 version = "0.1.0"
 edition = "2024"
 
+[profile.release]
+opt-level = 3
+lto = "fat"            # inlining cross-crate; ganho típico 5–15%
+codegen-units = 1      # compilação mais lenta, binário 5–10% mais rápido
+panic = "abort"        # elimina landing pads; ~2–5%
+debug = false
+strip = "symbols"
+
 [dependencies]
 macroquad = "0.4.16"
 rayon = "1.10"

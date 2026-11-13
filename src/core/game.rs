@@ -13,12 +13,15 @@ pub struct Game {
     pub map: Map,
     pub player: Player,
     pub score: u32,
-    // REMOVIDO: score_text: String,
     ghosts: [Ghost; GHOST_COUNT],
     state: GameState,
     mode: GhostMode,
     mode_timer: f32,
     rng: Rng,
+    // ── NOVOS: calculados uma vez, reutilizados em reset_in_place ──
+    player_spawn: (usize, usize),
+    player_init_dir: Direction,
+    ghost_spawns: [(usize, usize); GHOST_COUNT],
 }
 
 impl Game {
@@ -39,26 +42,45 @@ impl Game {
     /// Construtor para treinamento — seed **explícita** para reprodutibilidade.
     /// Mesma rede + mesma seed + mesmo mapa ⇒ mesma trajetória.
     pub fn with_map_and_seed(map: Map, seed: u64) -> Self {
-        let (sx, sy) = find_spawn(&map);
-        let dir = initial_direction(&map, sx, sy);
-        let player = Player::new(sx, sy, dir);
-    
-        let spawns = find_ghost_spawns(&map);
+        let player_spawn = find_spawn(&map);
+        let player_init_dir = initial_direction(&map, player_spawn.0, player_spawn.1);
+        let ghost_spawns = find_ghost_spawns(&map);
+
+        let player = Player::new(player_spawn.0, player_spawn.1, player_init_dir);
         let kinds = [GhostKind::Blinky, GhostKind::Pinky, GhostKind::Inky, GhostKind::Clyde];
         let ghosts = [
-            Ghost::new(spawns[0].0, spawns[0].1, kinds[0]),
-            Ghost::new(spawns[1].0, spawns[1].1, kinds[1]),
-            Ghost::new(spawns[2].0, spawns[2].1, kinds[2]),
-            Ghost::new(spawns[3].0, spawns[3].1, kinds[3]),
+            Ghost::new(ghost_spawns[0].0, ghost_spawns[0].1, kinds[0]),
+            Ghost::new(ghost_spawns[1].0, ghost_spawns[1].1, kinds[1]),
+            Ghost::new(ghost_spawns[2].0, ghost_spawns[2].1, kinds[2]),
+            Ghost::new(ghost_spawns[3].0, ghost_spawns[3].1, kinds[3]),
         ];
-    
+
         Self {
             map, player, score: 0, ghosts,
             state: GameState::Playing,
             mode: GhostMode::Scatter,
             mode_timer: SCATTER_DURATION,
             rng: Rng::new(seed),
+            player_spawn,
+            player_init_dir,
+            ghost_spawns,
         }
+    }
+
+    /// Reinicia o jogo **in-place**, sem re-alocar nada.
+    /// Usado em `Agent::evaluate_multi` para as seeds 2..K.
+    pub fn reset_in_place(&mut self, seed: u64) {
+        self.map.reset_pellets();
+        self.player = Player::new(self.player_spawn.0, self.player_spawn.1, self.player_init_dir);
+        let kinds = [GhostKind::Blinky, GhostKind::Pinky, GhostKind::Inky, GhostKind::Clyde];
+        for i in 0..GHOST_COUNT {
+            self.ghosts[i] = Ghost::new(self.ghost_spawns[i].0, self.ghost_spawns[i].1, kinds[i]);
+        }
+        self.score = 0;
+        self.state = GameState::Playing;
+        self.mode = GhostMode::Scatter;
+        self.mode_timer = SCATTER_DURATION;
+        self.rng = Rng::new(seed);
     }
 
     #[inline(always)] pub fn state(&self)      -> GameState   { self.state }

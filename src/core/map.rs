@@ -314,6 +314,22 @@ impl Map {
             pellets_remaining,
         })
     }
+
+    /// Restaura todas as pastilhas **sem alocar**. Chamado em `Game::reset_in_place`.
+    ///
+    /// O invariante "todo `Empty` é uma pastilha comida" (ver `fresh`) garante que
+    /// este método reconstrói exatamente o estado inicial do mapa.
+    pub fn reset_pellets(&mut self) {
+        let mut remaining = 0usize;
+        for t in self.tiles.iter_mut() {
+            match t {
+                Tile::Empty => { *t = Tile::Pellet; remaining += 1; }
+                Tile::Pellet => { remaining += 1; }
+                _ => {}
+            }
+        }
+        self.pellets_remaining = remaining;
+    }
 }
 
 // ---------------------------------------------------------------------------

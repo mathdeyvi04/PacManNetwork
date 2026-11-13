@@ -15,19 +15,15 @@ use std::time::Instant;
 // Simulação
 // ---------------------------------------------------------------------------
 
-fn simulate_generation_parallel(population: &mut [Agent]) {
+fn simulate_generation_parallel(population: &mut [Agent], base_map: &Map, seeds: &[u64]) {
     population.par_iter_mut().for_each(|agent| {
-        while !agent.finished {
-            agent.step();
-        }
+        agent.evaluate_multi(base_map, seeds);
     });
 }
 
-fn simulate_generation_single(population: &mut [Agent]) {
+fn simulate_generation_single(population: &mut [Agent], base_map: &Map, seeds: &[u64]) {
     for agent in population.iter_mut() {
-        while !agent.finished {
-            agent.step();
-        }
+        agent.evaluate_multi(base_map, seeds);
     }
 }
 
@@ -122,9 +118,9 @@ fn main() {
         let gen_start = Instant::now();
 
         if use_single_thread {
-            simulate_generation_single(&mut population);
+            simulate_generation_single(&mut population, &base_map, &EVAL_SEEDS);
         } else {
-            simulate_generation_parallel(&mut population);
+            simulate_generation_parallel(&mut population, &base_map, &EVAL_SEEDS);
         }
 
         let gen_elapsed_secs = gen_start.elapsed().as_secs_f32();
@@ -144,7 +140,7 @@ fn main() {
             best_ever = Some(BestEver {
                 fitness: best.fitness,
                 generation,
-                score: best.game.score,
+                score: best.avg_score,           
                 net: best.controller.net().clone(),
             });
         }
@@ -155,7 +151,7 @@ fn main() {
             best_fitness: best.fitness,
             avg_fitness: avg,
             std_dev,
-            best_score: best.game.score,
+            best_score: best.avg_score,
             best_ever_fitness: record.fitness,
             best_ever_generation: record.generation,
             best_ever_score: record.score,
@@ -164,7 +160,7 @@ fn main() {
         stats.print_row();
 
         if generation < N_GENERATIONS {
-            evolve_population(&mut population, &base_map, generation as u64);
+            evolve_population(&mut population, generation as u64);
         }
     }
 
