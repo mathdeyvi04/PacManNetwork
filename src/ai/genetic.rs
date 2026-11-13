@@ -14,48 +14,47 @@ use crate::ai::neural::NeuralController;
 use crate::ai::neural::NeuralNet;
 use crate::core::rng::Rng;
 
-// ---------------------------------------------------------------------------
-// Tamanho da População e Simulação
-// ---------------------------------------------------------------------------
-
+// ---------- POPULAÇÃO ----------
 pub const POPULATION_SIZE: usize = 100;
-
-/// Limite máximo de frames. Aumentado de 3000→8000 para dar espaço
-/// a agentes que consigam sobreviver bem explorando (não apenas aos
-/// que morrem cedo); partidas curtas continuam curtas.
 pub const MAX_STEPS: usize = 8000;
-
 pub const DT: f32 = 1.0 / 60.0;
+pub const N_GENERATIONS: usize = 9999;
 
-// ---------------------------------------------------------------------------
-// Parâmetros do Algoritmo Genético (sexuado + torneio + elitismo)
-// ---------------------------------------------------------------------------
+// ---------- ELITISMO: menos rígido ----------
+// 8 elites congelados bloqueiam exploração. Reduzir para 3 libera
+// mais slots para descendentes reais (não clones do mesmo pool).
+pub const ELITE_SIZE: usize = 3;
 
-/// Gerações. Aumentado de 50→200: com o bug de congelamento corrigido,
-/// a curva tende a subir de forma consistente e precisa de orçamento
-/// para mostrar todo o progresso possível.
-pub const N_GENERATIONS: usize = 1000;
+// ---------- MUTAÇÃO BASE: mais forte ----------
+// 0.05/0.15 nunca atravessa vales de fitness. 0.15/0.35 é o mínimo
+// para um MLP de 148 pesos sair de um ótimo local raso.
+pub const MUTATION_RATE: f32 = 0.15;
+pub const MUTATION_STRENGTH: f32 = 0.35;
 
-/// Elites preservados intactos. Aumentado de 5→8: pool um pouco maior
-/// de top performers (diversidade na base da população seguinte).
-pub const ELITE_SIZE: usize = 8;
+// ---------- MUTAÇÃO ADAPTATIVA ----------
+// Se não melhorar por N gerações, intensifica mutação temporariamente.
+pub const STAGNATION_THRESHOLD: u64 = 10;
+pub const STAGNATION_BOOST_RATE: f32 = 2.5;      // 0.15 → 0.375
+pub const STAGNATION_BOOST_STRENGTH: f32 = 2.0;  // 0.35 → 0.70
 
-/// Taxa de mutação por gene. Reduzida de 0.10→0.05: agora a diversidade
-/// principal vem do crossover; mutação passa a ser **refinamento**.
-pub const MUTATION_RATE: f32 = 0.05;
+// ---------- IMIGRANTES ALEATÓRIOS ----------
+// A cada N gerações, substitui os piores X% por redes aleatórias puras.
+// Isso injeta DNA que não existe na população (exploração genuína).
+pub const IMMIGRATION_INTERVAL: u64 = 15;
+pub const IMMIGRATION_FRACTION: f32 = 0.10;
 
-/// Magnitude da perturbação. Reduzida de 0.2→0.15: ajuste mais fino
-/// (menos "salto no escuro", mais "polir o que já funciona").
-pub const MUTATION_STRENGTH: f32 = 0.15;
-
-/// Fração de filhos gerados por **crossover** (resto: clone + mutação).
-/// 0.7 = 70% sexuado, 30% assexual — combina exploração (sexo) com
-/// continuidade (mutação pura do pai).
+// ---------- CROSSOVER: manter, mas adicionar ruído ----------
 pub const CROSSOVER_RATE: f32 = 0.7;
-
-/// Tamanho do torneio para escolher cada pai. k=3 → pressão seletiva
-/// moderada (o melhor de 3 vence, mas o 2º e o 3º ainda têm chance).
 pub const TOURNAMENT_K: usize = 3;
+
+// ---------- FITNESS: tornar timeout realmente caro ----------
+// ---------- FITNESS: gradiente de completude em vez de binário ----------
+//
+pub const FITNESS_STEP_COST: f32 = 0.02;
+pub const FITNESS_DEATH_PENALTY: f32 = -200.0;
+pub const FITNESS_TIMEOUT_PENALTY: f32 = -50.0;
+pub const FITNESS_COMPLETION_BONUS: f32 = 3000.0; // ← NOVO: 0..3000 conforme completude
+pub const FITNESS_WIN_BONUS: f32 = 2000.0;        // ← REDUZIDO: o grosso vem da completude
 
 // Cada agente é avaliado contra K partidas com estas K sementes FIXAS,
 // e o fitness reportado é a MÉDIA. Sem isso, um agente pode parecer
@@ -73,29 +72,6 @@ pub const EVAL_SEEDS: [u64; 5] = [
     0xAAAA_AAAA_AAAA_AAAA,
     0x1234_5678_9ABC_DEF0,
 ];
-
-// ---------------------------------------------------------------------------
-// Função de Fitness
-// ---------------------------------------------------------------------------
-//
-// fitness = score − steps×STEP_COST + penalty_estado_final
-//
-// penalty_estado_final:
-//   • GameOver (morreu)     → DEATH_PENALTY
-//   • Playing  (timeout)    → TIMEOUT_PENALTY   ← NOVO
-//   • Win      (venceu)     → WIN_BONUS
-//
-// O TIMEOUT_PENALTY é o que **elimina o "survivalist trap"**: sem ele,
-// um agente que come 60 pellets e fica parado até o timeout (fitness
-// 600−100=500) seria **melhor** que um agente que come 60 pellets e
-// morre tentando explorar (600−22−200=378). Com −500 no timeout, morrer
-// explorando passa a valer 378 e "escondido" passa a valer 500−500=0.
-// Força o comportamento correto: melhor tentar e perder do que travar.
-
-pub const FITNESS_STEP_COST: f32 = 0.02;
-pub const FITNESS_DEATH_PENALTY: f32 = -200.0;
-pub const FITNESS_TIMEOUT_PENALTY: f32 = -500.0;
-pub const FITNESS_WIN_BONUS: f32 = 5000.0;
 
 // ---------------------------------------------------------------------------
 // Entidade (Um Agente da População)
@@ -170,24 +146,37 @@ impl Agent {
     /// fosse `fn run_episode(&mut self)`, o `self` inteiro estaria
     /// emprestado uma vez e o compilador reclamaria.
     fn run_episode(ctrl: &mut NeuralController, game: &mut Game) -> f32 {
+        // Snapshot do total inicial de pellets **desta partida**.
+        // `pellets_remaining` no início do episódio é exatamente o total
+        // de pellets do mapa virgem — capturá-lo aqui evita precisar de
+        // um campo `initial_pellets` no `Map`.
+        let initial_pellets = game.map.pellets_remaining();
         let mut steps = 0usize;
-
+    
         while !game.is_finished() && steps < MAX_STEPS {
-            // `game: &mut Game` → coerção automática para `&Game` no `poll`.
             let action = ctrl.poll(game);
             game.update(DT, action);
             steps += 1;
         }
-
-        // Mesma fórmula de antes — apenas com `steps` local em vez de
-        // `self.steps` (que não é mais usado por ninguém).
+    
+        // Fração [0,1] de pellets comidos nesta partida.
+        let eaten = initial_pellets.saturating_sub(game.map.pellets_remaining());
+        let completion = if initial_pellets == 0 {
+            1.0
+        } else {
+            eaten as f32 / initial_pellets as f32
+        };
+    
+        let terminal = match game.state() {
+            GameState::GameOver => FITNESS_DEATH_PENALTY,
+            GameState::Win      => FITNESS_WIN_BONUS,
+            GameState::Playing  => FITNESS_TIMEOUT_PENALTY,
+        };
+    
         game.score as f32
+            + completion * FITNESS_COMPLETION_BONUS
             - steps as f32 * FITNESS_STEP_COST
-            + match game.state() {
-                GameState::GameOver => FITNESS_DEATH_PENALTY,
-                GameState::Win      => FITNESS_WIN_BONUS,
-                GameState::Playing  => FITNESS_TIMEOUT_PENALTY,
-            }
+            + terminal
     }
 }
 
@@ -285,11 +274,24 @@ fn tournament_select(snapshot: &[(f32, NeuralNet)], k: usize, rng: &mut Rng) -> 
 /// **Não toca em `game`, `fitness` nem `finished`.** A próxima simulação
 /// (`evaluate_multi`) reinicia tudo. Só os `controller`s (pesos) são
 /// modificados — elites preservam; filhos recombinam + mutam.
-pub fn evolve_population(population: &mut [Agent], generation: u64) {
+pub fn evolve_population(
+    population: &mut [Agent],
+    generation: u64,
+    generations_since_improvement: u64,
+) {
     let n = population.len();
     debug_assert!(n > ELITE_SIZE);
 
-    // Snapshot: fitness + net de cada indivíduo, antes de qualquer escrita.
+    // Mutação adaptativa: escala quando estagnado.
+    let (mut_rate, mut_strength) = if generations_since_improvement >= STAGNATION_THRESHOLD {
+        (
+            (MUTATION_RATE * STAGNATION_BOOST_RATE).min(0.6),
+            (MUTATION_STRENGTH * STAGNATION_BOOST_STRENGTH).min(1.0),
+        )
+    } else {
+        (MUTATION_RATE, MUTATION_STRENGTH)
+    };
+
     let snapshot: Vec<(f32, NeuralNet)> = population
         .iter()
         .map(|a| (a.fitness, a.controller.net().clone()))
@@ -300,10 +302,9 @@ pub fn evolve_population(population: &mut [Agent], generation: u64) {
         .wrapping_add(0xDEAD_BEEF_CAFE_F00D);
     let mut rng = Rng::new(gen_seed);
 
-    // 1. Elites: `population[..ELITE_SIZE]` já contém as melhores redes
-    //    no `controller`. Nada a fazer aqui — apenas NÃO sobrescrevê-las.
+    // Elites em [0..ELITE_SIZE] são preservados intactos.
 
-    // 2. Filhos: crossover + mutação.
+    // Descendentes a partir de [ELITE_SIZE..n).
     for agent in population.iter_mut().skip(ELITE_SIZE) {
         let pa = tournament_select(&snapshot, TOURNAMENT_K, &mut rng);
         let pb = tournament_select(&snapshot, TOURNAMENT_K, &mut rng);
@@ -315,8 +316,18 @@ pub fn evolve_population(population: &mut [Agent], generation: u64) {
         };
 
         let mut_seed = rng.next();
-        child_net.mutate(MUTATION_RATE, MUTATION_STRENGTH, mut_seed);
-
+        child_net.mutate(mut_rate, mut_strength, mut_seed);
         agent.controller = NeuralController::new(child_net);
+    }
+
+    // Imigrantes aleatórios: quebram a homogeneidade dos elites.
+    // Substitui os PIORES (últimos slots) — nunca os elites.
+    if generation > 0 && generation % IMMIGRATION_INTERVAL == 0 {
+        let n_immigrants = ((n as f32) * IMMIGRATION_FRACTION) as usize;
+        let start = n.saturating_sub(n_immigrants);
+        for i in start..n {
+            let imm_seed = rng.next();
+            population[i].controller = NeuralController::random_with_seed(imm_seed);
+        }
     }
 }

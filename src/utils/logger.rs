@@ -21,7 +21,7 @@ pub struct GenerationStats {
 //
 // Ordem das colunas:
 //   Gen | Best Fit | Avg Fit | StdDev | Score | Best-Ever | @Gen | Time(s)
-const W_GEN:        usize = 3;
+const W_GEN:        usize = 4;
 const W_FIT:        usize = 9;   // Best Fit, Avg Fit, Best-Ever
 const W_STD:        usize = 8;   // StdDev
 const W_SCORE:      usize = 7;   // Score

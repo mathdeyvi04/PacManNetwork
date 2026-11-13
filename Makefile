@@ -16,10 +16,10 @@ nn_map_random:
 
 # Rede treinada sobre o mapa dado
 nn:
-	cargo run --release --bin PacManNetwork -- nn best_gen_832.bin map.bin
+	cargo run --release --bin PacManNetwork -- nn best_gen_980.bin map.bin
 
 test:
 	cargo run --release --bin train
 
 test_single:
-	cargo run --release --bin train -- --single No newline at end of file
+	cargo run --release --bin train -- --single 

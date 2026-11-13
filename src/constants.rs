@@ -68,3 +68,10 @@ pub const COLOR_GHOST_BLINK: Color = WHITE;
 // Túnel: linha central do grid
 pub const TUNNEL_ROW: usize = GRID_HEIGHT / 2;    
 pub const COLOR_TUNNEL: Color = Color::new(0.15, 0.15, 0.30, 1.0);
+
+// Fantasmas — comportamento estocástico
+/// Chance, a cada cruzamento de centro de tile, de o fantasma ignorar
+/// o alvo e escolher uma direção válida aleatória (não-reversa).
+/// Faz parte da mitigação do overfit: diferentes `EVAL_SEEDS` produzem
+/// trajetórias realmente distintas dos fantasmas, sem mudar o mapa.
+pub const GHOST_RANDOM_TURN_CHANCE: f32 = 0.06;

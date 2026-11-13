@@ -114,6 +114,9 @@ fn main() {
     let mut population = init_population(POPULATION_SIZE, &base_map, base_seed);
     let mut best_ever: Option<BestEver> = None;
 
+    let mut gens_since_improvement: u64 = 0;
+    let mut prev_best_ever = f32::NEG_INFINITY;
+
     for generation in 1..=N_GENERATIONS {
         let gen_start = Instant::now();
 
@@ -146,6 +149,15 @@ fn main() {
         }
         let record = best_ever.as_ref().unwrap();
 
+        // Atualiza contador de estagnação
+        let record = best_ever.as_ref().unwrap();
+        if record.fitness > prev_best_ever + 0.01 {
+            prev_best_ever = record.fitness;
+            gens_since_improvement = 0;
+        } else {
+            gens_since_improvement += 1;
+        }
+
         let stats = GenerationStats {
             generation,
             best_fitness: best.fitness,
@@ -160,7 +172,7 @@ fn main() {
         stats.print_row();
 
         if generation < N_GENERATIONS {
-            evolve_population(&mut population, generation as u64);
+            evolve_population(&mut population, generation as u64, gens_since_improvement);
         }
     }
 

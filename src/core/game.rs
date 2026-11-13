@@ -45,16 +45,10 @@ impl Game {
         let player_spawn = find_spawn(&map);
         let player_init_dir = initial_direction(&map, player_spawn.0, player_spawn.1);
         let ghost_spawns = find_ghost_spawns(&map);
-
+    
         let player = Player::new(player_spawn.0, player_spawn.1, player_init_dir);
-        let kinds = [GhostKind::Blinky, GhostKind::Pinky, GhostKind::Inky, GhostKind::Clyde];
-        let ghosts = [
-            Ghost::new(ghost_spawns[0].0, ghost_spawns[0].1, kinds[0]),
-            Ghost::new(ghost_spawns[1].0, ghost_spawns[1].1, kinds[1]),
-            Ghost::new(ghost_spawns[2].0, ghost_spawns[2].1, kinds[2]),
-            Ghost::new(ghost_spawns[3].0, ghost_spawns[3].1, kinds[3]),
-        ];
-
+        let ghosts = spawn_ghosts(&ghost_spawns, seed);   // ← helper novo
+    
         Self {
             map, player, score: 0, ghosts,
             state: GameState::Playing,
@@ -72,10 +66,7 @@ impl Game {
     pub fn reset_in_place(&mut self, seed: u64) {
         self.map.reset_pellets();
         self.player = Player::new(self.player_spawn.0, self.player_spawn.1, self.player_init_dir);
-        let kinds = [GhostKind::Blinky, GhostKind::Pinky, GhostKind::Inky, GhostKind::Clyde];
-        for i in 0..GHOST_COUNT {
-            self.ghosts[i] = Ghost::new(self.ghost_spawns[i].0, self.ghost_spawns[i].1, kinds[i]);
-        }
+        self.ghosts = spawn_ghosts(&self.ghost_spawns, seed);  // ← helper novo
         self.score = 0;
         self.state = GameState::Playing;
         self.mode = GhostMode::Scatter;
@@ -216,4 +207,34 @@ fn find_ghost_spawns(map: &Map) -> [(usize, usize); 4] {
         }
     }
     spawns
+}
+
+/// Cria os 4 fantasmas com direção inicial pseudoaleatória derivada da seed.
+///
+/// Por que randomizar a direção inicial: o fantasma chega ao primeiro
+/// centro já na 1ª atualização; ali ele **não** roda `choose_direction`
+/// (não está `blocked` se a direção inicial é livre), então a direção
+/// inicial determina os primeiros ~12 frames. Isso já é suficiente para
+/// que os 4 fantasmas comecem em trajetórias diferentes entre seeds,
+/// mesmo antes de qualquer `GHOST_RANDOM_TURN_CHANCE` entrar em ação.
+///
+/// Usamos um `Rng` separado (não o `game.rng`) para não consumir o
+/// stream de gameplay — assim o número de chamadas de RNG dentro do
+/// loop de simulação não depende dessa inicialização.
+fn spawn_ghosts(spawns: &[(usize, usize); GHOST_COUNT], seed: u64) -> [Ghost; GHOST_COUNT] {
+    let kinds = [GhostKind::Blinky, GhostKind::Pinky, GhostKind::Inky, GhostKind::Clyde];
+    let mut dir_rng = Rng::new(seed ^ 0xDEAD_BEEF_CAFE_F00D);
+
+    let mut ghosts: [Ghost; GHOST_COUNT] = [
+        Ghost::new(spawns[0].0, spawns[0].1, kinds[0]),
+        Ghost::new(spawns[1].0, spawns[1].1, kinds[1]),
+        Ghost::new(spawns[2].0, spawns[2].1, kinds[2]),
+        Ghost::new(spawns[3].0, spawns[3].1, kinds[3]),
+    ];
+
+    for g in &mut ghosts {
+        g.dir = Direction::ALL[dir_rng.range_usize(4)];
+    }
+
+    ghosts
 }
