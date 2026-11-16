@@ -19,6 +19,8 @@ target/
 # Added by cargo
 
 /target
+/recordings
 
 read_all_files.txt
+context.txt
 *.bin

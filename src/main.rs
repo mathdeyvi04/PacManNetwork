@@ -2,6 +2,7 @@ mod constants;
 mod core;
 mod ai;
 mod ui;
+mod utils;                              // ← novo
 
 use macroquad::prelude::*;
 
@@ -13,6 +14,7 @@ use ai::neural::NeuralNet;
 use ai::neural::NeuralController;
 use ui::renderer::Renderer;
 use ui::neural_viz::NeuralViz;
+use utils::recorder::MatchRecorder;     // ← novo
 
 
 fn is_neural_mode() -> bool {
@@ -207,7 +209,40 @@ async fn main() {
 
     let renderer = Renderer::new();
 
+    // ─── Gravação (só no modo neural, uma partida por arquivo) ───
+    // Desligável com `PACMAN_NO_RECORD=1` no ambiente.
+    let mut recording = controller.as_neural().is_some()
+        && std::env::var_os("PACMAN_NO_RECORD").is_none();
+
+    let record_dir = std::path::PathBuf::from("recordings");
+
+    // ... código anterior ...
+    if recording {
+        match std::fs::create_dir_all(&record_dir) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!(
+                    "[rec] falha ao criar '{}': {} — gravação desativada",
+                    record_dir.display(), e
+                );
+                recording = false;
+            }
+        }
+    }
+
+    // Caminhos fixos para o arquivo temporário e o arquivo final
+    let temp_video_path = record_dir.join("current_match.mp4");
+    let final_video_path = record_dir.join("latest_match.mp4");
+    
+    let mut match_index: u64 = 0;
+    let mut recorder: Option<MatchRecorder> = None;
+
     loop {
+
+        if is_quit_requested() {
+            // O `recorder` sai do escopo aqui e o Drop dele apagará o current_match.mp4
+            break; 
+        }
         let dt = get_frame_time().min(0.05);
         clear_background(COLOR_BG);
 
@@ -218,6 +253,7 @@ async fn main() {
             //   • template presente → mesmo mapa, pellets repostos (`fresh`);
             //   • template ausente  → novo labirinto aleatório (`Game::new`).
             game = new_game(&template);
+            match_index += 1;                       // ← novo
         } else {
             game.update(dt, action);
         }
@@ -227,6 +263,38 @@ async fn main() {
         // Painel neural abaixo do mapa (só no modo NN).
         if let Some(nn) = controller.as_neural() {
             NeuralViz::draw(nn, WINDOW_HEIGHT as f32);
+        }
+
+        // ── Captura de tela ───────────────────────────────────────────
+        // 1) Abre o encoder desta partida na primeira oportunidade.
+        if recording && !game.is_finished() && recorder.is_none() {
+            recorder = Some(MatchRecorder::new(temp_video_path.clone(), 60));
+        }
+
+        // 2) Envia este frame (inclui o overlay de GameOver no frame
+        //    em que o jogo acabou de terminar).
+        if let Some(rec) = recorder.as_mut() {
+            if let Err(e) = rec.push_frame() {
+                eprintln!("[rec] {} — gravação desativada", e);
+                recorder = None;
+                recording = false;     // ← não tenta de novo nesta sessão
+            }
+        }
+
+        // 3) Fim da partida: fecha o .mp4 temporário e o promove para "latest"
+        if game.is_finished() {
+            if let Some(rec) = recorder.take() {
+                if let Err(e) = rec.finish() {
+                    eprintln!("[rec] erro ao finalizar vídeo: {}", e);
+                } else {
+                    // Sobrescreve o vídeo da partida anterior com o da partida que acabou de terminar.
+                    // (std::fs::rename substitui o destino se ele já existir, tanto no Linux quanto no Windows).
+                    match std::fs::rename(&temp_video_path, &final_video_path) {
+                        Ok(_) => println!("[rec] partida {:04} salva em '{}'", match_index, final_video_path.display()),
+                        Err(e) => eprintln!("[rec] erro ao renomear vídeo: {}", e),
+                    }
+                }
+            }
         }
 
         next_frame().await;
