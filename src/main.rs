@@ -14,7 +14,7 @@ use ai::neural::NeuralNet;
 use ai::neural::NeuralController;
 use ui::renderer::Renderer;
 use ui::neural_viz::NeuralViz;
-use utils::recorder::MatchRecorder;     // ← novo
+use utils::recorder::MatchRecorder;    
 
 
 fn is_neural_mode() -> bool {

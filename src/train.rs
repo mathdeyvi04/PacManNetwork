@@ -1,13 +1,18 @@
+#[macro_use]
+mod utils; // ← NOVO: traz macros (logln!) para este módulo
+
 mod constants;
 mod core;
 mod ai;
-mod utils;
+// mod utils; ← REMOVIDA: foi movida para cima com #[macro_use]
 
 use core::map::Map;
 use ai::genetic::*;
 use ai::neural::NeuralNet;
-use utils::logger::GenerationStats;
+use utils::logger::{GenerationStats, Logger}; // ← NOVO: importa Logger
+
 use std::sync::{Arc, Mutex};
+use std::io::Write;
 
 use rayon::prelude::*;
 use std::time::Instant;
@@ -58,27 +63,36 @@ fn main() {
         .position(|a| a == "--map")
         .and_then(|i| args.get(i + 1).cloned());
 
+    // ── NOVO: Logger fixo em "train_historic.txt" ──
+    // Sempre recriado do início a cada execução (o arquivo contém apenas o
+    // último treinamento realizado) e sem exigir caminho via argumento.
+    let mut logger = match Logger::new(None) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("Falha ao criar arquivo de log 'train_historic.txt': {}", e);
+            std::process::exit(1);
+        }
+    };
+
     let base_map = match map_path.as_deref() {
         Some(path) => match Map::load(path) {
             Ok(m) => {
-                println!("Mapa carregado de '{}' ({} pellets)\n", path, m.pellets_remaining());
+                logln!(logger, "Mapa carregado de '{}' ({} pellets)\n", path, m.pellets_remaining());
                 m
             }
             Err(e) => {
-                eprintln!(
-                    "Aviso: falha ao carregar '{}': {}. Gerando um novo mapa.",
-                    path, e
-                );
+                // Erros graves (Aviso) redirecionados ao log para manter o terminal limpo.
+                logln!(logger, "Aviso: falha ao carregar '{}': {}. Gerando um novo mapa.", path, e);
                 let m = Map::generate();
                 let _ = m.save("map.bin");
-                println!("Mapa novo gerado e salvo em 'map.bin' ({} pellets)\n", m.pellets_remaining());
+                logln!(logger, "Mapa novo gerado e salvo em 'map.bin' ({} pellets)\n", m.pellets_remaining());
                 m
             }
         },
         None => {
             let m = Map::generate();
             let _ = m.save("map.bin");
-            println!("Mapa novo gerado e salvo em 'map.bin' ({} pellets)\n", m.pellets_remaining());
+            logln!(logger, "Mapa novo gerado e salvo em 'map.bin' ({} pellets)\n", m.pellets_remaining());
             m
         }
     };
@@ -89,14 +103,16 @@ fn main() {
         "Multi-Thread (Rayon)"
     };
 
-    println!("=== Iniciando Treinamento Evolutivo ===");
-    println!("Modo de Execução: {}", mode_str);
-    println!(
+    logln!(logger, "=== Iniciando Treinamento Evolutivo ===");
+    logln!(logger, "Modo de Execução: {}", mode_str);
+    logln!(
+        logger,
         "Gerações: {:3} | População: {:3} | Limite: {:4} frames\n",
         N_GENERATIONS, POPULATION_SIZE, MAX_STEPS
     );
 
-    GenerationStats::print_header();
+    let _ = GenerationStats::print_header(&mut logger);
+    let _ = logger.flush(); // Força a escrita imediata do cabeçalho no arquivo
 
     let total_start = Instant::now();
 
@@ -112,7 +128,7 @@ fn main() {
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0x9E37_79B9_7F4A_7C15)
         });
-    
+
     let mut population = init_population(POPULATION_SIZE, &base_map, base_seed);
     let mut best_ever: Option<BestEver> = None;
 
@@ -125,7 +141,7 @@ fn main() {
     // e o `Option` representa "ainda não rodou nenhuma geração".
     // -----------------------------------------------------------------------
     let best_snapshot: Arc<Mutex<Option<BestEver>>> = Arc::new(Mutex::new(None));
-    
+
     // -----------------------------------------------------------------------
     // Handler de SIGINT (Ctrl+C).
     //
@@ -138,15 +154,14 @@ fn main() {
     //      o usuário distinguir "treino concluído" de "treino interrompido".
     //   3. `exit(130)` — 128 + SIGINT, convenção Unix.
     //
-    // Se o mutex estiver envenenado (main thread panickou enquanto o
-    // segurava) ou o snapshot estiver vazio (Ctrl+C antes da G1 terminar),
-    // apenas imprime aviso e sai mesmo assim — não há como salvar nada útil.
+    // Mensagens do handler vão para `stderr` (eprintln!), pois são avisos
+    // que o usuário deve ver imediatamente mesmo que o log esteja em arquivo.
     // -----------------------------------------------------------------------
     {
         let snapshot = Arc::clone(&best_snapshot);
         if let Err(e) = ctrlc::set_handler(move || {
             eprintln!("\n[!] Ctrl+C recebido — salvando a melhor rede conhecida...");
-    
+
             match snapshot.lock() {
                 Ok(guard) => match guard.as_ref() {
                     Some(best) => {
@@ -172,7 +187,7 @@ fn main() {
                     "[!] Mutex envenenado — saindo sem salvar."
                 ),
             }
-    
+
             std::process::exit(130);
         }) {
             eprintln!("[!] Aviso: não foi possível instalar o handler de Ctrl+C: {}", e);
@@ -212,7 +227,7 @@ fn main() {
                 score: best.avg_score,
                 net: best.controller.net().clone(),
             });
-        
+
             // Espelha no snapshot compartilhado para o handler de Ctrl+C.
             // Bloqueia por nanossegundos; contenção com o handler é
             // teórica (ele só dispara uma vez).
@@ -223,7 +238,6 @@ fn main() {
         let record = best_ever.as_ref().unwrap();
 
         // Atualiza contador de estagnação
-        let record = best_ever.as_ref().unwrap();
         if record.fitness > prev_best_ever + 0.01 {
             prev_best_ever = record.fitness;
             gens_since_improvement = 0;
@@ -242,7 +256,8 @@ fn main() {
             best_ever_score: record.score,
             time_secs: gen_elapsed_secs,
         };
-        stats.print_row();
+        let _ = stats.print_row(&mut logger);
+        let _ = logger.flush(); // Garante que a linha seja salva no arquivo em tempo real
 
         if generation < N_GENERATIONS {
             evolve_population(&mut population, generation as u64, gens_since_improvement);
@@ -257,15 +272,21 @@ fn main() {
     let record = best_ever.expect("população vazia — impossível com N_GENERATIONS >= 1");
     let filename = format!("best_gen_{:03}.bin", record.generation);
 
-    println!("\n----------------------------------------------------------------------");
-    println!("Treinamento concluído em {:.2} segundos!", total_elapsed_secs);
-    println!(
+    logln!(logger, "\n----------------------------------------------------------------------");
+    logln!(logger, "Treinamento concluído em {:.2} segundos!", total_elapsed_secs);
+    logln!(
+        logger,
         "Melhor rede: geração {:02} | fitness {:+.2} | score {}",
         record.generation, record.fitness, record.score
     );
 
     match record.net.save(&filename) {
-        Ok(()) => println!("Salva em '{}' (use com `nn {} map.bin`)", filename, filename),
-        Err(e) => eprintln!("Erro ao salvar '{}': {}", filename, e),
+        Ok(()) => {
+            logln!(logger, "Salva em '{}' (use com `nn {} map.bin`)", filename, filename);
+        }
+        Err(e) => {
+            logln!(logger, "Erro ao salvar '{}': {}", filename, e);
+        }
     }
+    let _ = logger.flush(); // Garante que as últimas linhas sejam escritas
 }
