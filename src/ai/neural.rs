@@ -1,6 +1,6 @@
-//! Inferência de rede neural (MLP 4 → 16 → 4) jogando Pac-Man.
+//! Inferência de rede neural (MLP 8 → 32 → 4) jogando Pac-Man.
 //!
-//! Sem heap no forward pass. Pesos em arrays fixos (≈600 bytes).
+//! Sem heap no forward pass. Pesos em arrays fixos (≈1.6 kB).
 //! Formato de arquivo próprio (magic + header + f32 LE).
 
 use std::fs::File;
@@ -16,15 +16,15 @@ use crate::core::player::Direction;
 use crate::core::rng::Rng;
 
 // ---------------------------------------------------------------------------
-// Arquitetura — 4 sensores direcionais → 16 ocultos → 4 saídas
+// Arquitetura — 8 entradas (4 eventos + 4 distâncias) → 32 ocultos → 4 saídas
 // ---------------------------------------------------------------------------
 
-pub const INPUT_SIZE:  usize = 4;
-pub const HIDDEN_SIZE: usize = 16;     // 4× a dimensão de entrada
+pub const INPUT_SIZE:  usize = 8;   // 4 eventos + 4 distâncias
+pub const HIDDEN_SIZE: usize = 32;  // 4× entradas (preserva o "ratio" original)
 pub const OUTPUT_SIZE: usize = 4;
 
 const MAGIC: &[u8; 8] = b"PACNET01";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;             // bump: arquivo incompatível com v1 (4→16→4)
 
 // Codificação escalar de cada categoria (ordem semântica: perigo → recompensa)
 const ENC_GHOST:   f32 = -1.0;         // morte iminente
@@ -83,7 +83,7 @@ impl NeuralNet {
     /// Crossover **uniforme gene a gene**: cada parâmetro é escolhido
     /// aleatoriamente de `self` ou de `other` com probabilidade 50%.
     ///
-    /// Preferido a single-point porque a topologia é fixa (4→16→4) e
+    /// Preferido a single-point porque a topologia é fixa (8→32→4) e
     /// recombinação "por camada" quebraria blocos funcionais inteiros.
     /// Uniforme preserva blocos locais e permite que dois pais contribuam
     /// com partes distintas (ex.: "aprendeu a desviar" + "aprendeu a comer").
@@ -214,17 +214,16 @@ fn read_u32(f: &mut File) -> io::Result<u32> {
 // Encoding
 // ---------------------------------------------------------------------------
 
-/// 4 sensores direcionais. Para cada direção, faz raycast a partir do tile
-/// adjacente ao Pac-Man e reporta **o primeiro evento significativo**:
+/// 8 entradas em dois blocos paralelos (mesma ordem de direções):
 ///
-/// * fantasma → -1.0 (prioridade sobre qualquer tile — sobrevivência primeiro)
-/// * parede  → -0.5
-/// * túnel   → +0.5 (inclui wrap-around na linha do túnel)
-/// * pellet  → +1.0
-/// * nada    →  0.0 (raycast chegou à borda sem encontrar nada)
+/// * `0..4` — **categorias** `[Up, Down, Left, Right]`: primeiro evento
+///   significativo do raycast em cada direção —
+///   fantasma (-1.0), parede (-0.5), túnel (+0.5), pellet (+1.0), nada (0.0).
+///   Fantasma tem prioridade sobre qualquer tile (sobrevivência primeiro).
+/// * `4..8` — **distâncias** até esse mesmo evento, normalizadas por
+///   `1 / (1 + d)` (intervalo `(0, 0.5]`), mesma ordem `[Up, Down, Left, Right]`.
 ///
-/// Ordem das 4 entradas: `[Up, Down, Left, Right]` — casa com a ordem do
-/// argmax em `NeuralController::poll`.
+/// A ordem das categorias casa com o argmax em `NeuralController::poll`.
 pub fn encode(game: &Game) -> [f32; INPUT_SIZE] {
     let (px, py) = game.player.tile();
     const DIRS: [Direction; 4] = [
@@ -242,14 +241,38 @@ pub fn encode(game: &Game) -> [f32; INPUT_SIZE] {
         ghost_tiles[i] = (gx as i32, gy as i32);
     }
 
-    let mut f = [ENC_NOTHING; INPUT_SIZE];
+    let mut f = [0.0f32; INPUT_SIZE];
     for (i, &dir) in DIRS.iter().enumerate() {
-        f[i] = sense(&game.map, &ghost_tiles, px, py, dir);
+        let (event, distance) = sense(&game.map, &ghost_tiles, px, py, dir);
+        f[i]     = event;                          // 0..3: categoria
+        f[i + 4] = normalize_distance(distance);   // 4..7: distância
     }
     f
 }
 
+/// Normaliza uma distância em tiles para o intervalo `(0, 0.5]`.
+///
+/// * `d = 1`  → 0.500
+/// * `d = 2`  → 0.333
+/// * `d = 5`  → 0.167
+/// * `d = 10` → 0.091
+/// * `d = 30` → 0.032
+///
+/// Vantagens: (a) cabe no mesmo range das categorias em `[-1, 1]` sem
+/// dominar a primeira camada; (b) decaimento suave → mais resolução perto
+/// (o que importa para desviar de fantasma e comer pellet); (c) nunca
+/// explode para raycasts longos.
+#[inline]
+fn normalize_distance(d: f32) -> f32 {
+    1.0 / (1.0 + d)
+}
+
 /// Raycast a partir de `(px, py)` na direção `dir`.
+///
+/// Retorna `(evento, distância_em_tiles)`.
+///
+/// * `evento` mantém a codificação categórica atual.
+/// * `distância` é a distância até **esse** evento (≥ 1.0).
 #[inline]
 fn sense(
     map: &Map,
@@ -257,7 +280,7 @@ fn sense(
     px: usize,
     py: usize,
     dir: Direction,
-) -> f32 {
+) -> (f32, f32) {
     let (dx, dy) = match dir {
         Direction::Up    => (0, -1),
         Direction::Down  => (0,  1),
@@ -268,45 +291,50 @@ fn sense(
     let h = GRID_HEIGHT as i32;
     let mut x = px as i32 + dx;
     let mut y = py as i32 + dy;
+    let mut dist = 1.0f32;
 
     // Caso especial: Pac-Man em cima de um tile de túnel na borda,
-    // olhando para fora → wrap-around → túnel.
+    // olhando para fora → wrap-around → túnel (distância 1).
     if (x < 0 || x >= w) && y == TUNNEL_ROW as i32 {
-        return ENC_TUNNEL;
+        return (ENC_TUNNEL, dist);
     }
 
-    let mut first_event = ENC_NOTHING;
+    let mut first_event      = ENC_NOTHING;
+    let mut first_event_dist = 0.0f32;
 
     // A visão só é bloqueada por paredes. O loop continua varrendo a linha
     // para garantir que um fantasma seja detectado mesmo que haja pellets no caminho.
     while x >= 0 && y >= 0 && x < w && y < h {
         // 1. Fantasma tem prioridade absoluta (sobrevivência em primeiro lugar).
         // Ele "atravessa" pellets na visão do sensor.
-        // OTIMIZAÇÃO: usa as posições inteiras já pré-calculadas — zero `floor()`.
         for &(gx, gy) in ghost_tiles {
             if gx == x && gy == y {
-                return ENC_GHOST;
+                return (ENC_GHOST, dist);
             }
         }
 
-        let tile = map.tile_at(x as usize, y as usize);
-        match tile {
+        match map.tile_at(x as usize, y as usize) {
             Tile::Wall => {
-                // A parede bloqueia o sensor.
-                // Retorna a parede se estava de cara com ela,
-                // ou o primeiro evento (pellet/túnel) que foi visto antes dela.
-                return if first_event == ENC_NOTHING { ENC_WALL } else { first_event };
+                // Parede: devolve o primeiro evento anterior se existir,
+                // senão devolve a parede com sua própria distância.
+                return if first_event == ENC_NOTHING {
+                    (ENC_WALL, dist)
+                } else {
+                    (first_event, first_event_dist)
+                };
             }
             Tile::Pellet => {
                 // Registra o primeiro pellet visto, mas não interrompe a busca por fantasmas.
                 if first_event == ENC_NOTHING {
-                    first_event = ENC_PELLET;
+                    first_event      = ENC_PELLET;
+                    first_event_dist = dist;
                 }
             }
             Tile::Tunnel => {
                 // Registra o primeiro túnel visto.
                 if first_event == ENC_NOTHING {
-                    first_event = ENC_TUNNEL;
+                    first_event      = ENC_TUNNEL;
+                    first_event_dist = dist;
                 }
             }
             Tile::Empty => {
@@ -316,11 +344,17 @@ fn sense(
 
         x += dx;
         y += dy;
+        dist += 1.0;
     }
 
-    // Se chegou na borda do mapa sem encontrar parede nem fantasma,
-    // retorna o que tiver visto primeiro (ou ENC_NOTHING se estiver vazio).
-    first_event
+    // Se chegou à borda do mapa sem encontrar parede nem fantasma,
+    // devolve o primeiro evento com sua distância (ou ENC_NOTHING + dist
+    // "grande" — inofensivo após normalização).
+    if first_event == ENC_NOTHING {
+        (ENC_NOTHING, dist)
+    } else {
+        (first_event, first_event_dist)
+    }
 }
 
 // ---------------------------------------------------------------------------

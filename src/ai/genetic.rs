@@ -18,7 +18,7 @@ use crate::core::rng::Rng;
 pub const POPULATION_SIZE: usize = 100;
 pub const MAX_STEPS: usize = 8000;
 pub const DT: f32 = 1.0 / 60.0;
-pub const N_GENERATIONS: usize = 9999;
+pub const N_GENERATIONS: usize = 2000;
 
 // ---------- ELITISMO: menos rígido ----------
 // 8 elites congelados bloqueiam exploração. Reduzir para 3 libera
