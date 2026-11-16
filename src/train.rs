@@ -257,7 +257,10 @@ fn main() {
             time_secs: gen_elapsed_secs,
         };
         let _ = stats.print_row(&mut logger);
-        let _ = logger.flush(); // Garante que a linha seja salva no arquivo em tempo real
+
+        if generation % 10 == 0 {
+            let _ = logger.flush();
+        }
 
         if generation < N_GENERATIONS {
             evolve_population(&mut population, generation as u64, gens_since_improvement);

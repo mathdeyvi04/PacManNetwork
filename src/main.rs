@@ -273,27 +273,17 @@ async fn main() {
 
         // 2) Envia este frame (inclui o overlay de GameOver no frame
         //    em que o jogo acabou de terminar).
+        // 2) Envia este frame
         if let Some(rec) = recorder.as_mut() {
-            if let Err(e) = rec.push_frame() {
-                eprintln!("[rec] {} — gravação desativada", e);
-                recorder = None;
-                recording = false;     // ← não tenta de novo nesta sessão
-            }
+            rec.push_frame();
         }
 
-        // 3) Fim da partida: fecha o .mp4 temporário e o promove para "latest"
+        // 3) Fim da partida
         if game.is_finished() {
             if let Some(rec) = recorder.take() {
-                if let Err(e) = rec.finish() {
-                    eprintln!("[rec] erro ao finalizar vídeo: {}", e);
-                } else {
-                    // Sobrescreve o vídeo da partida anterior com o da partida que acabou de terminar.
-                    // (std::fs::rename substitui o destino se ele já existir, tanto no Linux quanto no Windows).
-                    match std::fs::rename(&temp_video_path, &final_video_path) {
-                        Ok(_) => println!("[rec] partida {:04} salva em '{}'", match_index, final_video_path.display()),
-                        Err(e) => eprintln!("[rec] erro ao renomear vídeo: {}", e),
-                    }
-                }
+                rec.finish();
+                // O rename do arquivo continua o mesmo
+                let _ = std::fs::rename(&temp_video_path, &final_video_path);
             }
         }
 
