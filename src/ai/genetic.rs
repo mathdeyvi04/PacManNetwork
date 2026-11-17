@@ -16,9 +16,9 @@ use crate::core::rng::Rng;
 
 // ---------- POPULAÇÃO ----------
 pub const POPULATION_SIZE: usize = 100;
-pub const MAX_STEPS: usize = 8000;
+pub const MAX_STEPS: usize = 12000;
 pub const DT: f32 = 1.0 / 60.0;
-pub const N_GENERATIONS: usize = 2000;
+pub const N_GENERATIONS: usize = 5000;
 
 // ---------- ELITISMO: menos rígido ----------
 // 8 elites congelados bloqueiam exploração. Reduzir para 3 libera
@@ -47,14 +47,19 @@ pub const IMMIGRATION_FRACTION: f32 = 0.10;
 pub const CROSSOVER_RATE: f32 = 0.4;
 pub const TOURNAMENT_K: usize = 6;
 
-// ---------- FITNESS: tornar timeout realmente caro ----------
-// ---------- FITNESS: gradiente de completude em vez de binário ----------
+// ---------- FITNESS: exploração via tiles distintos ----------
 //
-pub const FITNESS_STEP_COST: f32 = 0.02;
-pub const FITNESS_DEATH_PENALTY: f32 = -200.0;
-pub const FITNESS_TIMEOUT_PENALTY: f32 = -50.0;
-pub const FITNESS_COMPLETION_BONUS: f32 = 3000.0; // ← NOVO: 0..3000 conforme completude
-pub const FITNESS_WIN_BONUS: f32 = 2000.0;        // ← REDUZIDO: o grosso vem da completude
+// Substitui FITNESS_MOVEMENT_REWARD. Uma rede que fica parada, oscila
+// entre dois tiles, ou empurra parede sem sair do lugar vê `count`
+// congelado em 1–3. A única forma de subir o contador é entrar em tiles
+// NOVOS — exatamente o comportamento que queremos premiar.
+pub const FITNESS_DISTINCT_TILE_REWARD: f32 = 2.0;
+
+// Mantidos da Rota A:
+pub const FITNESS_TIMEOUT_PENALTY: f32 = -200.0;
+pub const FITNESS_DEATH_PENALTY:   f32 = -200.0;
+pub const FITNESS_COMPLETION_BONUS: f32 = 3000.0;
+pub const FITNESS_WIN_BONUS:        f32 = 2000.0;
 
 // Cada agente é avaliado contra K partidas com estas K sementes FIXAS,
 // e o fitness reportado é a MÉDIA. Sem isso, um agente pode parecer
@@ -72,6 +77,65 @@ pub const EVAL_SEEDS: [u64; 5] = [
     0xAAAA_AAAA_AAAA_AAAA,
     0x1234_5678_9ABC_DEF0,
 ];
+
+use crate::constants::{GRID_HEIGHT, GRID_WIDTH};
+
+// ---------------------------------------------------------------------------
+// Tiles Visitados — bitmap compacto para contagem de tiles distintos
+// ---------------------------------------------------------------------------
+
+/// Quantas palavras de 64 bits cabem no grid.
+/// `31 × 33 = 1023 tiles` → `ceil(1023 / 64) = 16` palavras = **128 bytes**.
+const VISITED_WORDS: usize = (GRID_WIDTH * GRID_HEIGHT + 63) / 64;
+
+/// Bitmap de tiles já pisados pelo Pac-Man durante **um** episódio.
+///
+/// Conta cada tile **diferente** uma única vez. Re-entrar num tile já
+/// visitado é um no-op — é essa propriedade que penaliza vaivém: uma
+/// rede que oscila entre dois tiles fica presa em `count == 2`, enquanto
+/// uma que explora o mapa chega a 300–500.
+///
+/// Instanciado localmente em `run_episode`. Cada chamada começa zerada:
+/// não persiste entre seeds, o que é correto (cada seed é uma trajetória
+/// independente; somar tiles entre seeds seria contar exploração dupla).
+struct VisitedTiles {
+    bits:  [u64; VISITED_WORDS],
+    count: u32,
+}
+
+impl VisitedTiles {
+    #[inline]
+    fn new() -> Self {
+        Self { bits: [0; VISITED_WORDS], count: 0 }
+    }
+
+    /// Marca `(x, y)` como visitado. Retorna `true` se era inédito.
+    ///
+    /// **Pré-condição:** `x < GRID_WIDTH && y < GRID_HEIGHT`. Satisfeita
+    /// por construção — `game.player.tile()` nunca devolve coordenadas
+    /// fora do grid (o `Player::update` faz clamp via `Map::is_wall`).
+    #[inline]
+    fn visit(&mut self, x: usize, y: usize) -> bool {
+        let idx  = y * GRID_WIDTH + x;
+        let word = idx / 64;
+        let bit  = idx % 64;
+        let mask = 1u64 << bit;
+        if self.bits[word] & mask != 0 {
+            false
+        } else {
+            self.bits[word] |= mask;
+            self.count += 1;
+            true
+        }
+    }
+
+    #[inline]
+    fn count(&self) -> u32 { self.count }
+}
+
+impl Default for VisitedTiles {
+    fn default() -> Self { Self::new() }
+}
 
 // ---------------------------------------------------------------------------
 // Entidade (Um Agente da População)
@@ -146,20 +210,29 @@ impl Agent {
     /// fosse `fn run_episode(&mut self)`, o `self` inteiro estaria
     /// emprestado uma vez e o compilador reclamaria.
     fn run_episode(ctrl: &mut NeuralController, game: &mut Game) -> f32 {
-        // Snapshot do total inicial de pellets **desta partida**.
-        // `pellets_remaining` no início do episódio é exatamente o total
-        // de pellets do mapa virgem — capturá-lo aqui evita precisar de
-        // um campo `initial_pellets` no `Map`.
         let initial_pellets = game.map.pellets_remaining();
         let mut steps = 0usize;
+    
+        // ── Contador de tiles DISTINTOS ──
+        // Marca o spawn primeiro (Pac-Man "está" ali). Cada frame depois disso
+        // tenta marcar o tile atual: se for inédito, `count` incrementa; se
+        // for revisita, é no-op. É essa "deduplicação" que diferencia uma
+        // rede exploradora de uma rede que oscila entre dois tiles.
+        let mut visited = VisitedTiles::new();
+        {
+            let (sx, sy) = game.player.tile();
+            visited.visit(sx, sy);
+        }
     
         while !game.is_finished() && steps < MAX_STEPS {
             let action = ctrl.poll(game);
             game.update(DT, action);
+    
+            let (tx, ty) = game.player.tile();
+            visited.visit(tx, ty);
             steps += 1;
         }
     
-        // Fração [0,1] de pellets comidos nesta partida.
         let eaten = initial_pellets.saturating_sub(game.map.pellets_remaining());
         let completion = if initial_pellets == 0 {
             1.0
@@ -173,9 +246,10 @@ impl Agent {
             GameState::Playing  => FITNESS_TIMEOUT_PENALTY,
         };
     
+        // ── Fórmula final: score + completude + exploração + terminal ──
         game.score as f32
             + completion * FITNESS_COMPLETION_BONUS
-            - steps as f32 * FITNESS_STEP_COST
+            + visited.count() as f32 * FITNESS_DISTINCT_TILE_REWARD
             + terminal
     }
 }
