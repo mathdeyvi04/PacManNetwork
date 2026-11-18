@@ -1,16 +1,23 @@
 //! Painel de visualização da rede neural, desenhado abaixo do mapa.
 //!
-//! Layout:
-//!   INPUT  — 8 sensores como D-Pad **aninhado**
-//!            • anel externo: evento por direção (fantasma/parede/túnel/pellet/nada)
-//!            • anel interno: distância normalizada ao evento (0.0 ..= 0.5)
-//!   HIDDEN — 32 neurônios em grade 8 × 4
+//! Layout (arquitetura 16 → 48 → 4):
+//!
+//!   INPUT (rays)  — D-Pad **aninhado**, 8 sensores
+//!                   • anel externo: evento por direção (fantasma/parede/túnel/pellet/nada)
+//!                   • anel interno: distância normalizada ao evento (0.0 ..= 0.5)
+//!
+//!   INPUT (ghosts) — grade 2 × 4 (linha × coluna = tipo × fantasma)
+//!                   • linha superior: distância normalizada a cada fantasma
+//!                   • linha inferior: ângulo relativo a cada fantasma em [-1, 1]
+//!                   • colunas nomeadas B / P / I / C (Blinky, Pinky, Inky, Clyde)
+//!
+//!   HIDDEN — 48 neurônios em grade 8 × 6
 //!   OUTPUT — 4 ações em D-Pad
 //!
-//! O aninhamento preserva a leitura espacial: olhando para o quadrado
-//! "esquerda", o externo diz o que há lá e o interno diz a que distância.
-//! Diferente de intercalar os 8 em uma única fileira, isso mantém a
-//! associação evento↔distância imediata, sem precisar de rótulos extras.
+//! O aninhamento do bloco de raycast preserva a leitura espacial: olhando
+//! para o quadrado "esquerda", o externo diz o que há lá e o interno diz a
+//! que distância. O bloco de fantasmas mantém o mesmo fantasma na mesma
+//! coluna em ambas as linhas — "coluna B" = "dados do Blinky".
 
 use macroquad::prelude::*;
 
@@ -23,30 +30,43 @@ use crate::ai::neural::{NeuralController, INPUT_SIZE, HIDDEN_SIZE, OUTPUT_SIZE};
 
 const CONTENT_Y: f32 = 90.0;
 
-// D-Pad externo (eventos) — mesmas dimensões do layout antigo.
+// ---- Raycast D-Pad (bloco 1 do input) -------------------------------------
 const DPAD_CELL: f32 = 38.0;
 const DPAD_GAP:  f32 = 8.0;
 
 // D-Pad interno (distâncias) — cabe no vão central do D-Pad externo:
 //   vão = 2 * (half + gap) = 2 * (19 + 8) = 54
 //   inner = 2 * (INNER_CELL/2 + INNER_GAP + INNER_CELL) = 2 * (8 + 1 + 16) = 50
-// Sobram 2 px de folga em cada lado.
 const INNER_CELL: f32 = 16.0;
 const INNER_GAP:  f32 = 1.0;
 
-// Camada oculta: grade 8 × 4 = 32 neurônios.
+// ---- Ghost block (bloco 2 do input) ---------------------------------------
+const GHOST_COLS: usize = 4;       // um por fantasma
+const GHOST_ROWS: usize = 2;       // dist (topo) / ângulo (base)
+const GHOST_CELL: f32   = 22.0;
+const GHOST_GAP:  f32   = 2.0;
+const GHOST_BLOCK_W: f32 =
+    GHOST_COLS as f32 * GHOST_CELL + (GHOST_COLS - 1) as f32 * GHOST_GAP;
+const GHOST_BLOCK_H: f32 =
+    GHOST_ROWS as f32 * GHOST_CELL + (GHOST_ROWS - 1) as f32 * GHOST_GAP;
+
+// ---- Hidden layer ---------------------------------------------------------
+// HIDDEN_SIZE == 48 → grade 8 × 6 (mantém 8 colunas e, portanto, a largura
+// total idêntica à do layout antigo 8×4).
 const HIDDEN_COLS: usize = 8;
-const HIDDEN_ROWS: usize = 4;
+const HIDDEN_ROWS: usize = 6;
 const HIDDEN_CELL: f32  = 18.0;
 
-// Garantias em tempo de compilação — falham se neural.rs mudar sem
-// a visualização ser atualizada junto.
-const _: () = assert!(INPUT_SIZE  == 8, "viz de input assumindo 8 sensores");
+// Garantias em tempo de compilação — falham se neural.rs mudar sem a
+// visualização ser atualizada junto.
+const _: () = assert!(INPUT_SIZE  == 16, "viz de input assumindo 16 sensores");
 const _: () = assert!(HIDDEN_SIZE == HIDDEN_COLS * HIDDEN_ROWS, "grade ≠ HIDDEN_SIZE");
 
-// Centros X das três seções.
-const INPUT_CX:  f32 = 100.0;
-const HIDDEN_X:  f32 = 231.0;
+// Centros X das seções.
+const INPUT_CX:  f32 = 70.0;
+const GHOST_LX:  f32 = 142.0;                                   // left edge
+const GHOST_CX:  f32 = GHOST_LX + GHOST_BLOCK_W * 0.5;          // centro do bloco
+const HIDDEN_X:  f32 = 245.0;
 const OUTPUT_CX: f32 = WINDOW_WIDTH as f32 - 100.0;
 
 pub struct NeuralViz;
@@ -65,15 +85,16 @@ impl NeuralViz {
 
         // Títulos (centralizados por measure_text — resiliente a mudar o texto).
         let hdr = Color::new(0.75, 0.75, 0.85, 1.0);
-        draw_text_centered("SENSORS (8)", INPUT_CX, y0 + 24.0, 16.0, hdr);
+        draw_text_centered("SENSORS (16)", INPUT_CX, y0 + 24.0, 16.0, hdr);
         draw_text_centered(
-            "HIDDEN (32)",
+            "HIDDEN (48)",
             HIDDEN_X + HIDDEN_COLS as f32 * HIDDEN_CELL * 0.5,
             y0 + 24.0, 16.0, hdr,
         );
         draw_text_centered("OUTPUT (4)", OUTPUT_CX, y0 + 24.0, 16.0, hdr);
 
         draw_input_nested(ctrl, y0 + 10.0);
+        draw_input_ghosts(ctrl, y0 + 10.0);
         draw_hidden(ctrl, y0 + 10.0);
         draw_output_dpad(ctrl, y0 + 10.0);
     }
@@ -104,7 +125,7 @@ fn draw_square_with_text(x: f32, y: f32, size: f32, color: Color, text: &str, fo
 }
 
 // ---------------------------------------------------------------------------
-// Camada de Entrada — D-Pad aninhado (evento externo, distância interna)
+// Camada de Entrada — bloco 1: D-Pad aninhado (evento externo, distância interna)
 // ---------------------------------------------------------------------------
 
 fn draw_input_nested(ctrl: &NeuralController, y0: f32) {
@@ -150,20 +171,69 @@ fn draw_input_nested(ctrl: &NeuralController, y0: f32) {
         let val = ctrl.last_input[4 + i];
         let t = (val * 2.0).clamp(0.0, 1.0);
         let color = heat_distance(t);
-        let text = format!("{:.1}", val); // "0.5", "0.3", "0.0"
+        let text = format!("{:.1}", val);
         draw_square_with_text(x, y, ic, color, &text, 9);
     }
 
-    // Legenda curta: deixa explícito qual anel é qual. Posicionada
-    // abaixo do D-Pad, ainda dentro do painel de 180 px (compatível
-    // com a altura antiga) e com folga confortável em 240 px.
+    // Legenda curta sob o D-Pad.
     let cap = Color::new(0.55, 0.55, 0.65, 1.0);
-    draw_text_centered("outer: event",    INPUT_CX, y0 + 168.0, 10.0, cap);
-    draw_text_centered("inner: distance", INPUT_CX, y0 + 180.0, 10.0, cap);
+    draw_text_centered("outer: event", INPUT_CX, y0 + 168.0, 10.0, cap);
+    draw_text_centered("inner: dist",  INPUT_CX, y0 + 180.0, 10.0, cap);
 }
 
 // ---------------------------------------------------------------------------
-// Camada Oculta — grade 8 × 4 (32 neurônios)
+// Camada de Entrada — bloco 2: grade 2×4 de fantasmas
+// ---------------------------------------------------------------------------
+
+fn draw_input_ghosts(ctrl: &NeuralController, y0: f32) {
+    let cy = y0 + CONTENT_Y;
+    let cx = GHOST_CX;
+
+    let ox = cx - GHOST_BLOCK_W * 0.5;
+    let oy = cy - GHOST_BLOCK_H * 0.5;
+
+    // ---- Nomes das colunas (B/P/I/C) -------------------------------------
+    let hdr = Color::new(0.65, 0.65, 0.75, 1.0);
+    let names = ["B", "P", "I", "C"];
+    for i in 0..GHOST_COLS {
+        let col_cx = ox + i as f32 * (GHOST_CELL + GHOST_GAP) + GHOST_CELL * 0.5;
+        draw_text_centered(names[i], col_cx, oy - 6.0, 10.0, hdr);
+    }
+
+    // ---- Linha 0: distâncias (índices 8..12) -----------------------------
+    // Faixa (0.0, 0.5] → reamostra t = 2·val p/ heat_distance (0..1).
+    for i in 0..GHOST_COLS {
+        let x = ox + i as f32 * (GHOST_CELL + GHOST_GAP);
+        let val = ctrl.last_input[8 + i];
+        let t = (val * 2.0).clamp(0.0, 1.0);
+        draw_rectangle(x, oy, GHOST_CELL, GHOST_CELL, heat_distance(t));
+        draw_rectangle_lines(
+            x, oy, GHOST_CELL, GHOST_CELL, 1.0,
+            Color::new(1.0, 1.0, 1.0, 0.15),
+        );
+    }
+
+    // ---- Linha 1: ângulos (índices 12..16) -------------------------------
+    // Faixa [-1, 1] → heat_signed direto (neg = azul, pos = vermelho).
+    let y_ang = oy + GHOST_CELL + GHOST_GAP;
+    for i in 0..GHOST_COLS {
+        let x = ox + i as f32 * (GHOST_CELL + GHOST_GAP);
+        let val = ctrl.last_input[12 + i];
+        draw_rectangle(x, y_ang, GHOST_CELL, GHOST_CELL, heat_signed(val));
+        draw_rectangle_lines(
+            x, y_ang, GHOST_CELL, GHOST_CELL, 1.0,
+            Color::new(1.0, 1.0, 1.0, 0.15),
+        );
+    }
+
+    // Legenda.
+    let cap = Color::new(0.55, 0.55, 0.65, 1.0);
+    draw_text_centered("top: dist",  GHOST_CX, y0 + 168.0, 10.0, cap);
+    draw_text_centered("bot: angle", GHOST_CX, y0 + 180.0, 10.0, cap);
+}
+
+// ---------------------------------------------------------------------------
+// Camada Oculta — grade 8 × 6 (48 neurônios)
 // ---------------------------------------------------------------------------
 
 fn draw_hidden(ctrl: &NeuralController, y0: f32) {
@@ -230,6 +300,8 @@ fn draw_output_dpad(ctrl: &NeuralController, y0: f32) {
 // ---------------------------------------------------------------------------
 
 /// Evento com sinal: negativo → azul (perigo), positivo → vermelho (pellet).
+/// Também usado para os ângulos relativos aos fantasmas — aqui vermelho
+/// significa "abaixo/direita do Pac-Man", azul "acima/esquerda".
 #[inline(always)]
 fn heat_signed(t: f32) -> Color {
     if t >= 0.0 {
@@ -249,10 +321,9 @@ fn heat_positive(t: f32) -> Color {
 /// Distância: escuro (longe) → teal brilhante (perto).
 ///
 /// A paleta teal/ciano foi escolhida para ser visualmente **distinta**:
-///   - do vermelho/azul do `heat_signed`  (eventos)
+///   - do vermelho/azul do `heat_signed`  (eventos/ângulos)
 ///   - do verde-neon do `heat_positive`   (ocultos)
 ///   - do dourado da camada de saída
-/// Assim o anel interno nunca é confundido com um anel externo desbotado.
 #[inline(always)]
 fn heat_distance(t: f32) -> Color {
     Color::new(

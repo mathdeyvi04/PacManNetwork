@@ -1,6 +1,6 @@
-//! Inferência de rede neural (MLP 8 → 32 → 4) jogando Pac-Man.
+//! Inferência de rede neural (MLP 16 → 48 → 4) jogando Pac-Man.
 //!
-//! Sem heap no forward pass. Pesos em arrays fixos (≈1.6 kB).
+//! Sem heap no forward pass. Pesos em arrays fixos (≈4 kB).
 //! Formato de arquivo próprio (magic + header + f32 LE).
 
 use std::fs::File;
@@ -16,15 +16,22 @@ use crate::core::player::Direction;
 use crate::core::rng::Rng;
 
 // ---------------------------------------------------------------------------
-// Arquitetura — 8 entradas (4 eventos + 4 distâncias) → 32 ocultos → 4 saídas
+// Arquitetura — 16 entradas → 48 ocultos → 4 saídas
+//
+// Blocos de entrada (ordem semântica, ver `encode`):
+//   0..4   categoria do primeiro evento por direção [Up, Down, Left, Right]
+//   4..8   distância normalizada até esse evento
+//   8..12  distância normalizada a cada fantasma
+//   12..16 ângulo relativo a cada fantasma, em [-1, 1]
 // ---------------------------------------------------------------------------
 
-pub const INPUT_SIZE:  usize = 8;   // 4 eventos + 4 distâncias
-pub const HIDDEN_SIZE: usize = 32;  // 4× entradas (preserva o "ratio" original)
-pub const OUTPUT_SIZE: usize = 4;
+pub const INPUT_SIZE:  usize = 16;  // 4 categorias + 4 distâncias direcionais
+                                    // + 4 dist. fantasmas + 4 ângulos de fantasmas
+pub const HIDDEN_SIZE: usize = 48;  // ~3× o input — capacidade proporcional
+pub const OUTPUT_SIZE: usize = 4;   // mantém as 4 direções
 
 const MAGIC: &[u8; 8] = b"PACNET01";
-const VERSION: u32 = 2;             // bump: arquivo incompatível com v1 (4→16→4)
+const VERSION: u32 = 3;             // bump: incompatível com v1 (4→16→4) e v2 (8→32→4)
 
 // Codificação escalar de cada categoria (ordem semântica: perigo → recompensa)
 const ENC_GHOST:   f32 = -1.0;         // morte iminente
@@ -83,7 +90,7 @@ impl NeuralNet {
     /// Crossover **uniforme gene a gene**: cada parâmetro é escolhido
     /// aleatoriamente de `self` ou de `other` com probabilidade 50%.
     ///
-    /// Preferido a single-point porque a topologia é fixa (8→32→4) e
+    /// Preferido a single-point porque a topologia é fixa (16→48→4) e
     /// recombinação "por camada" quebraria blocos funcionais inteiros.
     /// Uniforme preserva blocos locais e permite que dois pais contribuam
     /// com partes distintas (ex.: "aprendeu a desviar" + "aprendeu a comer").
@@ -94,7 +101,7 @@ impl NeuralNet {
             w2: [0.0; OUTPUT_SIZE * HIDDEN_SIZE],
             b2: [0.0; OUTPUT_SIZE],
         };
-    
+
         for i in 0..HIDDEN_SIZE * INPUT_SIZE {
             child.w1[i] = if rng.unit() < 0.5 { self.w1[i] } else { other.w1[i] };
         }
@@ -107,7 +114,7 @@ impl NeuralNet {
         for i in 0..OUTPUT_SIZE {
             child.b2[i] = if rng.unit() < 0.5 { self.b2[i] } else { other.b2[i] };
         }
-    
+
         child
     }
 
@@ -214,14 +221,18 @@ fn read_u32(f: &mut File) -> io::Result<u32> {
 // Encoding
 // ---------------------------------------------------------------------------
 
-/// 8 entradas em dois blocos paralelos (mesma ordem de direções):
+/// 16 entradas em quatro blocos paralelos (mesma ordem de direções no 1º/2º):
 ///
 /// * `0..4` — **categorias** `[Up, Down, Left, Right]`: primeiro evento
 ///   significativo do raycast em cada direção —
 ///   fantasma (-1.0), parede (-0.5), túnel (+0.5), pellet (+1.0), nada (0.0).
 ///   Fantasma tem prioridade sobre qualquer tile (sobrevivência primeiro).
 /// * `4..8` — **distâncias** até esse mesmo evento, normalizadas por
-///   `1 / (1 + d)` (intervalo `(0, 0.5]`), mesma ordem `[Up, Down, Left, Right]`.
+///   `1 / (1 + d)`, mesma ordem `[Up, Down, Left, Right]`.
+/// * `8..12` — **distância a cada fantasma** (Blinky, Pinky, Inky, Clyde),
+///   Euclidiana em tiles, normalizada por `1 / (1 + d)`.
+/// * `12..16` — **ângulo relativo** a cada fantasma, `atan2(dy, dx) / π`
+///   no intervalo `[-1, 1]`.
 ///
 /// A ordem das categorias casa com o argmax em `NeuralController::poll`.
 pub fn encode(game: &Game) -> [f32; INPUT_SIZE] {
@@ -242,11 +253,32 @@ pub fn encode(game: &Game) -> [f32; INPUT_SIZE] {
     }
 
     let mut f = [0.0f32; INPUT_SIZE];
+
+    // ---- 0..8 — raycast direcional --------------------------------------
     for (i, &dir) in DIRS.iter().enumerate() {
         let (event, distance) = sense(&game.map, &ghost_tiles, px, py, dir);
         f[i]     = event;                          // 0..3: categoria
         f[i + 4] = normalize_distance(distance);   // 4..7: distância
     }
+
+    // ---- 8..16 — sensores de fantasmas ----------------------------------
+    // Usa posições em tiles (f32) para obter ângulos mais finos que o
+    // raycast por tile; a distância acompanha a mesma unidade.
+    let ppx = game.player.pos.x;
+    let ppy = game.player.pos.y;
+    for (i, g) in game.ghosts().iter().enumerate().take(4) {
+        let dx = g.pos.x - ppx;
+        let dy = g.pos.y - ppy;
+        let dist = (dx * dx + dy * dy).sqrt();
+
+        // Distância normalizada — mesma curva usada no raycast.
+        f[8 + i] = 1.0 / (1.0 + dist);
+
+        // Ângulo relativo em [-1, 1]. atan2(dy, dx) ∈ [-π, π].
+        let angle = dy.atan2(dx);
+        f[12 + i] = angle / std::f32::consts::PI;
+    }
+
     f
 }
 
