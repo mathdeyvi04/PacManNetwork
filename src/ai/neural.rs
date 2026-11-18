@@ -1,7 +1,12 @@
-//! Inferência de rede neural (MLP 16 → 48 → 4) jogando Pac-Man.
+//! Inferência de rede neural (MLP 22 → 64 → 4) jogando Pac-Man.
 //!
-//! Sem heap no forward pass. Pesos em arrays fixos (≈4 kB).
+//! Sem heap no forward pass. Pesos em arrays fixos (~6.7 kB).
 //! Formato de arquivo próprio (magic + header + f32 LE).
+//!
+//! Arquitetura (v4):
+//!   0..16   núcleo sensorial — raycast + fantasmas (v3)
+//!   16..18  gradiente de pellets (vetor de atração ponderado)
+//!   18..22  memória recorrente (cópia amortecida dos 4 primeiros ocultos)
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -16,22 +21,26 @@ use crate::core::player::Direction;
 use crate::core::rng::Rng;
 
 // ---------------------------------------------------------------------------
-// Arquitetura — 16 entradas → 48 ocultos → 4 saídas
+// Arquitetura — 22 entradas → 64 ocultos → 4 saídas
 //
-// Blocos de entrada (ordem semântica, ver `encode`):
+// Blocos de entrada (ordem semântica, ver `encode` + `poll`):
 //   0..4   categoria do primeiro evento por direção [Up, Down, Left, Right]
 //   4..8   distância normalizada até esse evento
 //   8..12  distância normalizada a cada fantasma
 //   12..16 ângulo relativo a cada fantasma, em [-1, 1]
+//   16..18 gradiente de pellets (x, y) em [-1, 1] (encode)
+//   18..22 memória recorrente (preenchida em `poll`)
 // ---------------------------------------------------------------------------
 
-pub const INPUT_SIZE:  usize = 16;  // 4 categorias + 4 distâncias direcionais
-                                    // + 4 dist. fantasmas + 4 ângulos de fantasmas
-pub const HIDDEN_SIZE: usize = 48;  // ~3× o input — capacidade proporcional
-pub const OUTPUT_SIZE: usize = 4;   // mantém as 4 direções
+pub const INPUT_SIZE:  usize = 22;  // 16 originais + 2 (gradiente de pellets) + 4 (memória recorrente)
+pub const HIDDEN_SIZE: usize = 64;  // ampliado proporcionalmente
+pub const OUTPUT_SIZE: usize = 4;
 
 const MAGIC: &[u8; 8] = b"PACNET01";
-const VERSION: u32 = 3;             // bump: incompatível com v1 (4→16→4) e v2 (8→32→4)
+const VERSION: u32 = 4;             // bump: incompatível com v1/v2/v3
+
+/// Quantos neurônios ocultos compõem a memória recorrente.
+pub const CONTEXT_SIZE: usize = 4;
 
 // Codificação escalar de cada categoria (ordem semântica: perigo → recompensa)
 const ENC_GHOST:   f32 = -1.0;         // morte iminente
@@ -90,7 +99,7 @@ impl NeuralNet {
     /// Crossover **uniforme gene a gene**: cada parâmetro é escolhido
     /// aleatoriamente de `self` ou de `other` com probabilidade 50%.
     ///
-    /// Preferido a single-point porque a topologia é fixa (16→48→4) e
+    /// Preferido a single-point porque a topologia é fixa (22→64→4) e
     /// recombinação "por camada" quebraria blocos funcionais inteiros.
     /// Uniforme preserva blocos locais e permite que dois pais contribuam
     /// com partes distintas (ex.: "aprendeu a desviar" + "aprendeu a comer").
@@ -221,7 +230,8 @@ fn read_u32(f: &mut File) -> io::Result<u32> {
 // Encoding
 // ---------------------------------------------------------------------------
 
-/// 16 entradas em quatro blocos paralelos (mesma ordem de direções no 1º/2º):
+/// 18 entradas produzidas por `encode` (as 4 de memória são injetadas em
+/// `NeuralController::poll`):
 ///
 /// * `0..4` — **categorias** `[Up, Down, Left, Right]`: primeiro evento
 ///   significativo do raycast em cada direção —
@@ -233,6 +243,12 @@ fn read_u32(f: &mut File) -> io::Result<u32> {
 ///   Euclidiana em tiles, normalizada por `1 / (1 + d)`.
 /// * `12..16` — **ângulo relativo** a cada fantasma, `atan2(dy, dx) / π`
 ///   no intervalo `[-1, 1]`.
+/// * `16..18` — **gradiente de pellets**: centroide ponderado por
+///   `1 / (1 + d²)` dos pellets restantes, tomado em relação ao Pac-Man
+///   e comprimido por `tanh` para `[-1, 1]`. Aponta na direção do cluster
+///   mais "pesado" (próximo + numeroso) de pellets.
+/// * `18..22` — deixado em 0.0 por `encode`; preenchido com a memória
+///   recorrente do frame anterior em `poll`.
 ///
 /// A ordem das categorias casa com o argmax em `NeuralController::poll`.
 pub fn encode(game: &Game) -> [f32; INPUT_SIZE] {
@@ -278,6 +294,45 @@ pub fn encode(game: &Game) -> [f32; INPUT_SIZE] {
         let angle = dy.atan2(dx);
         f[12 + i] = angle / std::f32::consts::PI;
     }
+
+    // ---- 16..18 — gradiente de pellets ----------------------------------
+    // Centroide ponderado por `1 / (1 + d²)` sobre todos os pellets
+    // restantes. O peso próximo-1 / longe-0 prioriza clusters próximos,
+    // mas ainda leva em conta pellets distantes quando não há nada perto.
+    //
+    // Nota de custo: varre o grid inteiro (≈1023 tiles) por frame. Em
+    // `MAX_STEPS = 12000` × `POPULATION_SIZE = 100` × `K = 5` seeds isso
+    // soma ~6B de leituras de tile por geração — aceitável, mas se o
+    // perfil mostrar custo relevante, amostrar a cada 2-4 frames basta:
+    // o gradiente varia pouco entre frames consecutivos.
+    let mut pellet_sum_x = 0.0f32;
+    let mut pellet_sum_y = 0.0f32;
+    let mut pellet_count = 0.0f32;
+
+    for y in 0..GRID_HEIGHT {
+        for x in 0..GRID_WIDTH {
+            if matches!(game.map.tile_at(x, y), Tile::Pellet) {
+                let dx = x as f32 - ppx;
+                let dy = y as f32 - ppy;
+                let dist_sq = dx * dx + dy * dy + 0.1;
+                // Pondera inversamente pela distância para priorizar clusters próximos
+                let weight = 1.0 / dist_sq;
+                pellet_sum_x += dx * weight;
+                pellet_sum_y += dy * weight;
+                pellet_count += weight;
+            }
+        }
+    }
+
+    if pellet_count > 0.0 {
+        f[16] = (pellet_sum_x / pellet_count).tanh(); // Normalizado para [-1, 1]
+        f[17] = (pellet_sum_y / pellet_count).tanh();
+    }
+
+    // ---- 18..22 — memória recorrente ------------------------------------
+    // Preenchida em `NeuralController::poll` com `last_context` do frame
+    // anterior. `encode` deixa 0.0 para que a função permaneça pura
+    // (mesmo `game` → mesmo retorno).
 
     f
 }
@@ -396,6 +451,9 @@ fn sense(
 pub struct NeuralController {
     net: NeuralNet,
     reverse_cooldown: u8,
+    /// Memória recorrente: cópia amortecida (tanh) dos 4 primeiros ocultos
+    /// do frame anterior, injetada em `x[18..22]`.
+    last_context: [f32; CONTEXT_SIZE],
     pub last_input:  [f32; INPUT_SIZE],
     pub last_hidden: [f32; HIDDEN_SIZE],
     pub last_output: [f32; OUTPUT_SIZE],
@@ -406,6 +464,7 @@ impl NeuralController {
         Self {
             net,
             reverse_cooldown: 0,
+            last_context: [0.0; CONTEXT_SIZE],
             last_input:  [0.0; INPUT_SIZE],
             last_hidden: [0.0; HIDDEN_SIZE],
             last_output: [0.0; OUTPUT_SIZE],
@@ -445,9 +504,21 @@ impl Controller for NeuralController {
             self.reverse_cooldown -= 1;
         }
 
-        let x = encode(game);
+        // 1. Codifica o estado atual do jogo (18 entradas)
+        let mut x = encode(game);
+
+        // 2. Injeta os 4 valores de memória do frame anterior nas entradas 18..22
+        for i in 0..CONTEXT_SIZE {
+            x[18 + i] = self.last_context[i];
+        }
+
         self.last_input = x;
         self.net.forward_into(&x, &mut self.last_hidden, &mut self.last_output);
+
+        // 3. Atualiza o contexto para o próximo frame usando uma fração da camada oculta
+        for i in 0..CONTEXT_SIZE {
+            self.last_context[i] = self.last_hidden[i].tanh();
+        }
 
         // argmax
         let mut best = 0usize;

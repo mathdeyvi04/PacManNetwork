@@ -1,23 +1,15 @@
 //! Painel de visualização da rede neural, desenhado abaixo do mapa.
 //!
-//! Layout (arquitetura 16 → 48 → 4):
+//! Layout atualizado para a arquitetura expandida (22 inputs → 64 hidden → 4 output):
 //!
-//!   INPUT (rays)  — D-Pad **aninhado**, 8 sensores
-//!                   • anel externo: evento por direção (fantasma/parede/túnel/pellet/nada)
-//!                   • anel interno: distância normalizada ao evento (0.0 ..= 0.5)
+//!   INPUTS DE SENSORIAL (22 total):
+//!     • D-Pad Aninhado (8 sensores): Eventos externos e distâncias.
+//!     • Grade de Fantasmas (8 sensores): Distâncias e ângulos de Blinky, Pinky, Inky, Clyde.
+//!     • Gradiente de Pellets (2 sensores): Atração para clusters de pellets (X e Y).
+//!     • Memória Recorrente (4 neurônios): Estado de contexto persistido entre frames.
 //!
-//!   INPUT (ghosts) — grade 2 × 4 (linha × coluna = tipo × fantasma)
-//!                   • linha superior: distância normalizada a cada fantasma
-//!                   • linha inferior: ângulo relativo a cada fantasma em [-1, 1]
-//!                   • colunas nomeadas B / P / I / C (Blinky, Pinky, Inky, Clyde)
-//!
-//!   HIDDEN — 48 neurônios em grade 8 × 6
-//!   OUTPUT — 4 ações em D-Pad
-//!
-//! O aninhamento do bloco de raycast preserva a leitura espacial: olhando
-//! para o quadrado "esquerda", o externo diz o que há lá e o interno diz a
-//! que distância. O bloco de fantasmas mantém o mesmo fantasma na mesma
-//! coluna em ambas as linhas — "coluna B" = "dados do Blinky".
+//!   HIDDEN — Omitido/Sacrificado visualmente para priorizar a clareza e o espaço dos inputs.
+//!   OUTPUT — 4 ações em D-Pad (direções).
 
 use macroquad::prelude::*;
 
@@ -30,44 +22,36 @@ use crate::ai::neural::{NeuralController, INPUT_SIZE, HIDDEN_SIZE, OUTPUT_SIZE};
 
 const CONTENT_Y: f32 = 90.0;
 
-// ---- Raycast D-Pad (bloco 1 do input) -------------------------------------
-const DPAD_CELL: f32 = 38.0;
-const DPAD_GAP:  f32 = 8.0;
+// ---- Raycast D-Pad (bloco 1 do input: 0..8) -------------------------------
+const DPAD_CELL: f32 = 32.0;
+const DPAD_GAP:  f32 = 6.0;
 
-// D-Pad interno (distâncias) — cabe no vão central do D-Pad externo:
-//   vão = 2 * (half + gap) = 2 * (19 + 8) = 54
-//   inner = 2 * (INNER_CELL/2 + INNER_GAP + INNER_CELL) = 2 * (8 + 1 + 16) = 50
-const INNER_CELL: f32 = 16.0;
+const INNER_CELL: f32 = 14.0;
 const INNER_GAP:  f32 = 1.0;
 
-// ---- Ghost block (bloco 2 do input) ---------------------------------------
-const GHOST_COLS: usize = 4;       // um por fantasma
-const GHOST_ROWS: usize = 2;       // dist (topo) / ângulo (base)
-const GHOST_CELL: f32   = 22.0;
+// ---- Ghost block (bloco 2 do input: 8..16) --------------------------------
+const GHOST_COLS: usize = 4;       
+const GHOST_ROWS: usize = 2;       
+const GHOST_CELL: f32   = 20.0;
 const GHOST_GAP:  f32   = 2.0;
 const GHOST_BLOCK_W: f32 =
     GHOST_COLS as f32 * GHOST_CELL + (GHOST_COLS - 1) as f32 * GHOST_GAP;
 const GHOST_BLOCK_H: f32 =
     GHOST_ROWS as f32 * GHOST_CELL + (GHOST_ROWS - 1) as f32 * GHOST_GAP;
 
-// ---- Hidden layer ---------------------------------------------------------
-// HIDDEN_SIZE == 48 → grade 8 × 6 (mantém 8 colunas e, portanto, a largura
-// total idêntica à do layout antigo 8×4).
-const HIDDEN_COLS: usize = 8;
-const HIDDEN_ROWS: usize = 6;
-const HIDDEN_CELL: f32  = 18.0;
+// ---- Pellets & Memory block (blocos 3 e 4 do input: 16..22) --------------
+const SMALL_CELL: f32 = 18.0;
 
-// Garantias em tempo de compilação — falham se neural.rs mudar sem a
-// visualização ser atualizada junto.
-const _: () = assert!(INPUT_SIZE  == 16, "viz de input assumindo 16 sensores");
-const _: () = assert!(HIDDEN_SIZE == HIDDEN_COLS * HIDDEN_ROWS, "grade ≠ HIDDEN_SIZE");
+// Garantias em tempo de compilação
+const _: () = assert!(INPUT_SIZE  == 22, "viz de input assumindo 22 sensores");
+const _: () = assert!(HIDDEN_SIZE == 64, "viz assume HIDDEN_SIZE == 64");
 
-// Centros X das seções.
-const INPUT_CX:  f32 = 70.0;
-const GHOST_LX:  f32 = 142.0;                                   // left edge
-const GHOST_CX:  f32 = GHOST_LX + GHOST_BLOCK_W * 0.5;          // centro do bloco
-const HIDDEN_X:  f32 = 245.0;
-const OUTPUT_CX: f32 = WINDOW_WIDTH as f32 - 100.0;
+// Centros X das seções reorganizadas para acomodar os novos inputs com clareza.
+const INPUT_RAYS_CX: f32 = 65.0;
+const GHOST_LX:      f32 = 135.0;
+const GHOST_CX:      f32 = GHOST_LX + GHOST_BLOCK_W * 0.5;
+const EXTRA_CX:      f32 = 245.0; // Bloco unificado para Gradiente de Pellets + Memória
+const OUTPUT_CX:     f32 = WINDOW_WIDTH as f32 - 80.0;
 
 pub struct NeuralViz;
 
@@ -83,19 +67,15 @@ impl NeuralViz {
             Color::new(0.30, 0.30, 0.55, 1.0),
         );
 
-        // Títulos (centralizados por measure_text — resiliente a mudar o texto).
+        // Títulos das seções
         let hdr = Color::new(0.75, 0.75, 0.85, 1.0);
-        draw_text_centered("SENSORS (16)", INPUT_CX, y0 + 24.0, 16.0, hdr);
-        draw_text_centered(
-            "HIDDEN (48)",
-            HIDDEN_X + HIDDEN_COLS as f32 * HIDDEN_CELL * 0.5,
-            y0 + 24.0, 16.0, hdr,
-        );
-        draw_text_centered("OUTPUT (4)", OUTPUT_CX, y0 + 24.0, 16.0, hdr);
+        draw_text_centered("RAYS & GHOSTS (16)", 150.0, y0 + 22.0, 14.0, hdr);
+        draw_text_centered("CLUSTERS & MEMORY (6)", EXTRA_CX, y0 + 22.0, 14.0, hdr);
+        draw_text_centered("OUTPUT (4)", OUTPUT_CX, y0 + 22.0, 14.0, hdr);
 
         draw_input_nested(ctrl, y0 + 10.0);
         draw_input_ghosts(ctrl, y0 + 10.0);
-        draw_hidden(ctrl, y0 + 10.0);
+        draw_extra_sensors(ctrl, y0 + 10.0); // Gradiente de Pellets + Memória
         draw_output_dpad(ctrl, y0 + 10.0);
     }
 }
@@ -109,8 +89,6 @@ fn draw_text_centered(text: &str, cx: f32, y: f32, size: f32, color: Color) {
     draw_text(text, cx - dims.width * 0.5, y, size, color);
 }
 
-/// Desenha uma caixa com texto centralizado dentro.
-/// Adapta a cor do texto (preto/branco) ao brilho da cor de fundo.
 fn draw_square_with_text(x: f32, y: f32, size: f32, color: Color, text: &str, font_size: u16) {
     draw_rectangle(x, y, size, size, color);
     draw_rectangle_lines(x, y, size, size, 1.0, Color::new(1.0, 1.0, 1.0, 0.2));
@@ -118,22 +96,19 @@ fn draw_square_with_text(x: f32, y: f32, size: f32, color: Color, text: &str, fo
     let brightness = (color.r + color.g + color.b) / 3.0;
     let text_color = if brightness > 0.5 { BLACK } else { WHITE };
 
-    let dims = measure_text(text, None, font_size as u16, 1.0);
+    let dims = measure_text(text, None, font_size, 1.0);
     let tx = x + (size - dims.width) * 0.5;
     let ty = y + (size + dims.height) * 0.5 - 2.0;
     draw_text(text, tx, ty, font_size as f32, text_color);
 }
 
 // ---------------------------------------------------------------------------
-// Camada de Entrada — bloco 1: D-Pad aninhado (evento externo, distância interna)
+// Camada de Entrada — D-Pad aninhado (0..8)
 // ---------------------------------------------------------------------------
 
 fn draw_input_nested(ctrl: &NeuralController, y0: f32) {
-    let cx = INPUT_CX;
+    let cx = INPUT_RAYS_CX;
     let cy = y0 + CONTENT_Y;
-
-    // ---- Anel externo: eventos (índices 0..4 de last_input) ----
-    // Ordem esperada em last_input: [Up, Down, Left, Right].
     let c = DPAD_CELL;
     let g = DPAD_GAP;
     let half = c / 2.0;
@@ -149,21 +124,18 @@ fn draw_input_nested(ctrl: &NeuralController, y0: f32) {
         let (x, y) = outer_positions[i];
         let val = ctrl.last_input[i];
         let color = heat_signed(val);
-        let text = format!("{:+.1}", val);
-        draw_square_with_text(x, y, c, color, &text, 14);
+        draw_square_with_text(x, y, c, color, &format!("{:+.1}", val), 11);
     }
 
-    // ---- Anel interno: distâncias (índices 4..8 de last_input) ----
-    // Mesma ordem. Faixa: (0.0, 0.5]. Reamostra-se t=2·val p/ heatmap (0..1).
     let ic = INNER_CELL;
     let ig = INNER_GAP;
     let ihalf = ic / 2.0;
 
     let inner_positions = [
-        (cx - ihalf, cy - ihalf - ig - ic), // Up
-        (cx - ihalf, cy - ihalf + ig + ic), // Down
-        (cx - ihalf - ig - ic, cy - ihalf), // Left
-        (cx - ihalf + ig + ic, cy - ihalf), // Right
+        (cx - ihalf, cy - ihalf - ig - ic),
+        (cx - ihalf, cy - ihalf + ig + ic),
+        (cx - ihalf - ig - ic, cy - ihalf),
+        (cx - ihalf + ig + ic, cy - ihalf),
     ];
 
     for i in 0..4 {
@@ -171,94 +143,95 @@ fn draw_input_nested(ctrl: &NeuralController, y0: f32) {
         let val = ctrl.last_input[4 + i];
         let t = (val * 2.0).clamp(0.0, 1.0);
         let color = heat_distance(t);
-        let text = format!("{:.1}", val);
-        draw_square_with_text(x, y, ic, color, &text, 9);
+        draw_square_with_text(x, y, ic, color, &format!("{:.1}", val), 8);
     }
 
-    // Legenda curta sob o D-Pad.
     let cap = Color::new(0.55, 0.55, 0.65, 1.0);
-    draw_text_centered("outer: event", INPUT_CX, y0 + 168.0, 10.0, cap);
-    draw_text_centered("inner: dist",  INPUT_CX, y0 + 180.0, 10.0, cap);
+    draw_text_centered("rays: event/dist", INPUT_RAYS_CX, y0 + 172.0, 9.0, cap);
 }
 
 // ---------------------------------------------------------------------------
-// Camada de Entrada — bloco 2: grade 2×4 de fantasmas
+// Camada de Entrada — Fantasmas (8..16)
 // ---------------------------------------------------------------------------
 
 fn draw_input_ghosts(ctrl: &NeuralController, y0: f32) {
     let cy = y0 + CONTENT_Y;
     let cx = GHOST_CX;
-
     let ox = cx - GHOST_BLOCK_W * 0.5;
     let oy = cy - GHOST_BLOCK_H * 0.5;
 
-    // ---- Nomes das colunas (B/P/I/C) -------------------------------------
     let hdr = Color::new(0.65, 0.65, 0.75, 1.0);
     let names = ["B", "P", "I", "C"];
     for i in 0..GHOST_COLS {
         let col_cx = ox + i as f32 * (GHOST_CELL + GHOST_GAP) + GHOST_CELL * 0.5;
-        draw_text_centered(names[i], col_cx, oy - 6.0, 10.0, hdr);
+        draw_text_centered(names[i], col_cx, oy - 6.0, 9.0, hdr);
     }
 
-    // ---- Linha 0: distâncias (índices 8..12) -----------------------------
-    // Faixa (0.0, 0.5] → reamostra t = 2·val p/ heat_distance (0..1).
+    // Linha 0: Distâncias (8..12)
     for i in 0..GHOST_COLS {
         let x = ox + i as f32 * (GHOST_CELL + GHOST_GAP);
         let val = ctrl.last_input[8 + i];
         let t = (val * 2.0).clamp(0.0, 1.0);
         draw_rectangle(x, oy, GHOST_CELL, GHOST_CELL, heat_distance(t));
-        draw_rectangle_lines(
-            x, oy, GHOST_CELL, GHOST_CELL, 1.0,
-            Color::new(1.0, 1.0, 1.0, 0.15),
-        );
+        draw_rectangle_lines(x, oy, GHOST_CELL, GHOST_CELL, 1.0, Color::new(1.0, 1.0, 1.0, 0.15));
     }
 
-    // ---- Linha 1: ângulos (índices 12..16) -------------------------------
-    // Faixa [-1, 1] → heat_signed direto (neg = azul, pos = vermelho).
+    // Linha 1: Ângulos (12..16)
     let y_ang = oy + GHOST_CELL + GHOST_GAP;
     for i in 0..GHOST_COLS {
         let x = ox + i as f32 * (GHOST_CELL + GHOST_GAP);
         let val = ctrl.last_input[12 + i];
         draw_rectangle(x, y_ang, GHOST_CELL, GHOST_CELL, heat_signed(val));
-        draw_rectangle_lines(
-            x, y_ang, GHOST_CELL, GHOST_CELL, 1.0,
-            Color::new(1.0, 1.0, 1.0, 0.15),
-        );
+        draw_rectangle_lines(x, y_ang, GHOST_CELL, GHOST_CELL, 1.0, Color::new(1.0, 1.0, 1.0, 0.15));
     }
 
-    // Legenda.
     let cap = Color::new(0.55, 0.55, 0.65, 1.0);
-    draw_text_centered("top: dist",  GHOST_CX, y0 + 168.0, 10.0, cap);
-    draw_text_centered("bot: angle", GHOST_CX, y0 + 180.0, 10.0, cap);
+    draw_text_centered("ghosts: dist/angle", GHOST_CX, y0 + 172.0, 9.0, cap);
 }
 
 // ---------------------------------------------------------------------------
-// Camada Oculta — grade 8 × 6 (48 neurônios)
+// Novos Sensores: Gradiente de Pellets (16..18) e Memória Recorrente (18..22)
 // ---------------------------------------------------------------------------
 
-fn draw_hidden(ctrl: &NeuralController, y0: f32) {
-    let hid_max = ctrl.last_hidden.iter().cloned().fold(0.0f32, f32::max).max(1e-3);
+fn draw_extra_sensors(ctrl: &NeuralController, y0: f32) {
+    let cy = y0 + CONTENT_Y;
+    let sc = SMALL_CELL;
+    let gap = 4.0;
 
-    let grid_h = HIDDEN_ROWS as f32 * HIDDEN_CELL;
-    let origin_y = (y0 + CONTENT_Y) - grid_h * 0.5;
+    // -- Bloco 1: Gradiente de Pellets (2 células lado a lado: X e Y) --
+    let p_ox = EXTRA_CX - (2.0 * sc + gap) * 0.5;
+    let p_oy = cy - sc * 0.5 - 12.0;
 
-    for j in 0..HIDDEN_SIZE {
-        let row = j / HIDDEN_COLS;
-        let col = j % HIDDEN_COLS;
-        let t = (ctrl.last_hidden[j] / hid_max).clamp(0.0, 1.0);
+    draw_text_centered("Pellet Vector", EXTRA_CX, p_oy - 10.0, 9.0, Color::new(0.65, 0.65, 0.75, 1.0));
 
-        let x = HIDDEN_X + col as f32 * HIDDEN_CELL;
-        let y = origin_y + row as f32 * HIDDEN_CELL;
-
-        draw_rectangle(
-            x, y, HIDDEN_CELL - 1.0, HIDDEN_CELL - 1.0,
-            heat_positive(t),
-        );
+    let pellet_labels = ["X", "Y"];
+    for i in 0..2 {
+        let x = p_ox + i as f32 * (sc + gap);
+        let val = ctrl.last_input[16 + i];
+        let color = heat_signed(val);
+        draw_square_with_text(x, p_oy, sc, color, pellet_labels[i], 10);
     }
+
+    // -- Bloco 2: Memória Recorrente (4 células em linha: Contexto 0..3) --
+    let m_ox = EXTRA_CX - (4.0 * sc + 3.0 * gap) * 0.5;
+    let m_oy = cy + sc * 0.5 + 8.0;
+
+    draw_text_centered("Memory Context", EXTRA_CX, m_oy - 4.0, 9.0, Color::new(0.65, 0.65, 0.75, 1.0));
+
+    for i in 0..4 {
+        let x = m_ox + i as f32 * (sc + gap);
+        let val = ctrl.last_input[18 + i];
+        let t = ((val + 1.0) * 0.5).clamp(0.0, 1.0);
+        let color = Color::new(0.1 + t * 0.4, 0.1, 0.2 + t * 0.8, 1.0); // Tons de roxo/magenta
+        draw_square_with_text(x, m_oy, sc, color, &format!("{}", i), 9);
+    }
+
+    let cap = Color::new(0.55, 0.55, 0.65, 1.0);
+    draw_text_centered("clusters & memory state", EXTRA_CX, y0 + 172.0, 9.0, cap);
 }
 
 // ---------------------------------------------------------------------------
-// Camada de Saída — D-Pad simples (inalterado)
+// Camada de Saída — D-Pad de Ações (4 saídas)
 // ---------------------------------------------------------------------------
 
 fn draw_output_dpad(ctrl: &NeuralController, y0: f32) {
@@ -275,7 +248,6 @@ fn draw_output_dpad(ctrl: &NeuralController, y0: f32) {
         (cx - half + g + c, cy - half),
     ];
 
-    // Descobre o vencedor (argmax) para destacar.
     let mut argmax = 0usize;
     for k in 1..OUTPUT_SIZE {
         if ctrl.last_output[k] > ctrl.last_output[argmax] { argmax = k; }
@@ -284,24 +256,22 @@ fn draw_output_dpad(ctrl: &NeuralController, y0: f32) {
     for i in 0..OUTPUT_SIZE {
         let (x, y) = positions[i];
         let val = ctrl.last_output[i];
-        // Saídas brutas (ReLU, sem sigmoid): mapeia [-2, +2] → [0, 1].
         let t = ((val + 2.0) / 4.0).clamp(0.0, 1.0);
         let color = Color::new(0.2 + t * 0.8, 0.2 + t * 0.8, 0.0, 1.0);
-        draw_square_with_text(x, y, c, color, &format!("{:.1}", val), 14);
+        draw_square_with_text(x, y, c, color, &format!("{:.1}", val), 11);
     }
 
-    // Destaque branco no vencedor.
     let (ax, ay) = positions[argmax];
     draw_rectangle_lines(ax - 2.0, ay - 2.0, c + 4.0, c + 4.0, 2.0, WHITE);
+
+    let cap = Color::new(0.55, 0.55, 0.65, 1.0);
+    draw_text_centered("actions (argmax)", OUTPUT_CX, y0 + 172.0, 9.0, cap);
 }
 
 // ---------------------------------------------------------------------------
 // Cores (Heatmaps)
 // ---------------------------------------------------------------------------
 
-/// Evento com sinal: negativo → azul (perigo), positivo → vermelho (pellet).
-/// Também usado para os ângulos relativos aos fantasmas — aqui vermelho
-/// significa "abaixo/direita do Pac-Man", azul "acima/esquerda".
 #[inline(always)]
 fn heat_signed(t: f32) -> Color {
     if t >= 0.0 {
@@ -312,24 +282,12 @@ fn heat_signed(t: f32) -> Color {
     }
 }
 
-/// Ativação dos ocultos: verde-neon. Mantido igual.
-#[inline(always)]
-fn heat_positive(t: f32) -> Color {
-    Color::new(0.05 + t * 0.25, 0.10 + t * 0.85, 0.05 + t * 0.25, 1.0)
-}
-
-/// Distância: escuro (longe) → teal brilhante (perto).
-///
-/// A paleta teal/ciano foi escolhida para ser visualmente **distinta**:
-///   - do vermelho/azul do `heat_signed`  (eventos/ângulos)
-///   - do verde-neon do `heat_positive`   (ocultos)
-///   - do dourado da camada de saída
 #[inline(always)]
 fn heat_distance(t: f32) -> Color {
     Color::new(
-        0.02 + t * 0.10,   // R: ~0.02 → 0.12
-        0.15 + t * 0.60,   // G:  0.15 → 0.75
-        0.20 + t * 0.70,   // B:  0.20 → 0.90
+        0.02 + t * 0.10,
+        0.15 + t * 0.60,
+        0.20 + t * 0.70,
         1.0,
     )
 }

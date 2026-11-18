@@ -2,7 +2,7 @@
 //!
 //! Contém as constantes de configuração do processo evolutivo, a entidade
 //! `Agent`, a criação da população inicial, a ordenação por fitness e a
-//! **evolução assexual com elitismo + mutação uniforme**.
+//! **evolução sexuada com elitismo + torneio + mutação uniforme**.
 //!
 //! A simulação (loop de `step()` por agente, single/multi-thread) fica
 //! em `train.rs`, por ser uma preocupação de execução.
@@ -27,7 +27,7 @@ pub const ELITE_SIZE: usize = 4;
 
 // ---------- MUTAÇÃO BASE: mais forte ----------
 // 0.05/0.15 nunca atravessa vales de fitness. 0.15/0.35 é o mínimo
-// para um MLP de 148 pesos sair de um ótimo local raso.
+// para um MLP sair de um ótimo local raso.
 pub const MUTATION_RATE: f32 = 0.15;
 pub const MUTATION_STRENGTH: f32 = 0.35;
 
@@ -53,7 +53,25 @@ pub const TOURNAMENT_K: usize = 6;
 // entre dois tiles, ou empurra parede sem sair do lugar vê `count`
 // congelado em 1–3. A única forma de subir o contador é entrar em tiles
 // NOVOS — exatamente o comportamento que queremos premiar.
-pub const FITNESS_DISTINCT_TILE_REWARD: f32 = 2.0;
+pub const FITNESS_DISTINCT_TILE_REWARD: f32 = 2.5;
+
+// ---------- FITNESS: eficiência temporal ----------
+//
+// Coeficiente do bônus de pellets-por-passo. Escalado por 1000× em
+// `run_episode` para que 0.5 produza um fator efetivo de 500× — mesma
+// ordem de grandeza do score base (10 pts/pellet × dezenas de pellets).
+// Aumente para enfatizar velocidade, diminua para deixar o agente
+// explorar mais devagar.
+pub const FITNESS_TIME_EFFICIENCY_BONUS: f32 = 0.5;
+
+// ---------- FITNESS: inatividade ----------
+//
+// Penalidade por frame sem descobrir um tile novo **após** um limiar.
+// Reservada: `run_episode` não a aplica ainda (o bitmap `VisitedTiles`
+// já satura `count` em vaivém; esta penalidade explícita reforçaria o
+// sinal). Fica exposta para experimentos — aplicar no loop principal
+// quando `consecutive_stagnant > limiar` (ex.: 120 frames ≈ 2 s @ 60 fps).
+pub const FITNESS_STAGNATION_PENALTY: f32 = -0.1;
 
 // Mantidos da Rota A:
 pub const FITNESS_TIMEOUT_PENALTY: f32 = -200.0;
@@ -212,7 +230,7 @@ impl Agent {
     fn run_episode(ctrl: &mut NeuralController, game: &mut Game) -> f32 {
         let initial_pellets = game.map.pellets_remaining();
         let mut steps = 0usize;
-    
+
         // ── Contador de tiles DISTINTOS ──
         // Marca o spawn primeiro (Pac-Man "está" ali). Cada frame depois disso
         // tenta marcar o tile atual: se for inédito, `count` incrementa; se
@@ -223,33 +241,52 @@ impl Agent {
             let (sx, sy) = game.player.tile();
             visited.visit(sx, sy);
         }
-    
+
         while !game.is_finished() && steps < MAX_STEPS {
             let action = ctrl.poll(game);
             game.update(DT, action);
-    
+
             let (tx, ty) = game.player.tile();
             visited.visit(tx, ty);
             steps += 1;
         }
-    
+
         let eaten = initial_pellets.saturating_sub(game.map.pellets_remaining());
         let completion = if initial_pellets == 0 {
             1.0
         } else {
             eaten as f32 / initial_pellets as f32
         };
-    
+
         let terminal = match game.state() {
             GameState::GameOver => FITNESS_DEATH_PENALTY,
             GameState::Win      => FITNESS_WIN_BONUS,
             GameState::Playing  => FITNESS_TIMEOUT_PENALTY,
         };
-    
-        // ── Fórmula final: score + completude + exploração + terminal ──
+
+        // ── Eficiência temporal ──
+        // Pellets por passo, escalado para a mesma ordem de grandeza do
+        // score base. `FITNESS_TIME_EFFICIENCY_BONUS = 0.5` → fator 500×.
+        // Penaliza agentes que gastam 10k passos para comer 5 pellets
+        // (eaten/steps ≈ 0.0005 → bônus desprezível); premia quem limpa
+        // rápido (eaten/steps ≈ 0.2 → bônus ≈ 100).
+        //
+        // Guard `steps > 0` é defensivo: `with_map_and_seed` /
+        // `reset_in_place` sempre produzem um jogo em `Playing`, então o
+        // loop executa ao menos uma iteração na prática; mas se
+        // `MAX_STEPS == 0` fosse configurado, evitamos divisão por zero.
+        let efficiency_bonus = if eaten > 0 && steps > 0 {
+            (eaten as f32 / steps as f32) * FITNESS_TIME_EFFICIENCY_BONUS * 1000.0
+        } else {
+            0.0
+        };
+
+        // ── Fórmula final aprimorada ──
+        // Score + completude + exploração + eficiência + terminal.
         game.score as f32
             + completion * FITNESS_COMPLETION_BONUS
             + visited.count() as f32 * FITNESS_DISTINCT_TILE_REWARD
+            + efficiency_bonus
             + terminal
     }
 }
@@ -311,10 +348,6 @@ pub fn select_top_k_by_fitness(population: &mut [Agent], k: usize) {
     // Ordena só o subconjunto top-K (k pequeno — O(k log k) desprezível).
     population[..k].sort_by(cmp_fitness_desc);
 }
-
-// ---------------------------------------------------------------------------
-// Evolução — assexual com elitismo + mutação uniforme
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Evolução — sexuada com torneio + elitismo
@@ -399,7 +432,7 @@ pub fn evolve_population(
     if generation > 0 && generation % IMMIGRATION_INTERVAL == 0 {
         let n_immigrants = ((n as f32) * IMMIGRATION_FRACTION) as usize;
         let start = n.saturating_sub(n_immigrants);
-        
+
         // snapshot[0] é o elite (campeão, ainda não modificado).
         let champion = &snapshot[0].1;
         for i in start..n {
