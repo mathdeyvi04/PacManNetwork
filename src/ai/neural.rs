@@ -160,6 +160,32 @@ impl NeuralNet {
         y
     }
 
+    // -----------------------------------------------------------------------
+    // Introspecção de pesos (para telemetria externa — diversidade genética)
+    // -----------------------------------------------------------------------
+
+    /// Número total de parâmetros (`w1 + b1 + w2 + b2`), na ordem canônica
+    /// usada por `save`/`load`/`mutate`/`crossover`. Para 22→64→4, = 1732.
+    pub const PARAM_COUNT: usize =
+        HIDDEN_SIZE * INPUT_SIZE + HIDDEN_SIZE + OUTPUT_SIZE * HIDDEN_SIZE + OUTPUT_SIZE;
+
+    /// Visita cada parâmetro na ordem `w1‖b1‖w2‖b2` com seu índice denso
+    /// em `[0, PARAM_COUNT)`.
+    ///
+    /// Preferido a um `impl Iterator<Item = &f32>` porque:
+    ///   - monomorphiza por `F` — o compilador vê 4 loops `for` sobre arrays
+    ///     fixos e inlina o closure no chamador (sem state machine de `Chain`);
+    ///   - fornece o índice sem exigir `.enumerate()` + contador externo;
+    ///   - não vaza `ExactSizeIterator` nem lifetime na assinatura pública.
+    #[inline]
+    pub fn for_each_param<F: FnMut(usize, f32)>(&self, mut f: F) {
+        let mut i = 0;
+        for &w in &self.w1 { f(i, w); i += 1; }
+        for &w in &self.b1 { f(i, w); i += 1; }
+        for &w in &self.w2 { f(i, w); i += 1; }
+        for &w in &self.b2 { f(i, w); i += 1; }
+    }
+
     // Acessores read-only para a visualização (sem cópia, sem alocação).
     #[inline(always)] pub fn w1(&self) -> &[f32; HIDDEN_SIZE * INPUT_SIZE]  { &self.w1 }
     #[inline(always)] pub fn w2(&self) -> &[f32; OUTPUT_SIZE * HIDDEN_SIZE] { &self.w2 }

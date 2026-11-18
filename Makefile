@@ -16,7 +16,7 @@ nn_map_random:
 
 # Rede treinada sobre o mapa dado
 nn:
-	cargo run --release --bin PacManNetwork -- nn best_gen_260.bin map.bin 0xDEAD_BEEF_CAFE_F00D
+	cargo run --release --bin PacManNetwork -- nn best_gen_3911.bin map.bin 0xDEAD_BEEF_CAFE_F00D
 
 test:
 	cargo run --release --bin train
